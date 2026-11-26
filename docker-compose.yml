@@ -1,0 +1,42 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: tzone-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      API_PORT: 8000
+      MSGRAPH_CALLBACK_PORT: 8484
+      DATA_DIR: /data
+      MSGRAPH_HOME: /data
+      SKILLS_DIR: /app/skills
+    ports:
+      - "${HOST_API_PORT:-8088}:8000"
+      - "127.0.0.1:${MSGRAPH_CALLBACK_PORT:-8484}:${MSGRAPH_CALLBACK_PORT:-8484}"
+    volumes:
+      - tzone_data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: tzone-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-3100}:80"
+
+volumes:
+  tzone_data:

@@ -1,0 +1,1518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>T-ZONE — Interactive UI Wireframe</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --surface-alt: #f8fafc;
+      --surface-muted: #eef1f5;
+      --ink: #111827;
+      --ink-2: #374151;
+      --muted: #6b7280;
+      --border: #cbd5e1;
+      --border-strong: #94a3b8;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --accent-border: #93c5fd;
+      --green: #047857;
+      --green-soft: #ecfdf5;
+      --amber: #b45309;
+      --amber-soft: #fffbeb;
+      --red: #b91c1c;
+      --red-soft: #fef2f2;
+      --purple: #6d28d9;
+      --purple-soft: #f5f3ff;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      height: 100%;
+      font-family: var(--font-sans);
+      color: var(--ink);
+      background: var(--bg);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    /* Wireframe Top Bar */
+    .wf-bar {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      border-bottom: 2px solid #334155;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+    .wf-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .wf-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: #1e293b;
+      border: 1px solid #475569;
+      color: #93c5fd;
+    }
+    .wf-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .wf-tab {
+      background: #1e293b;
+      color: #cbd5e1;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .wf-tab:hover { background: #334155; color: #fff; }
+    .wf-tab.active {
+      background: var(--accent);
+      border-color: #60a5fa;
+      color: #fff;
+    }
+    .wf-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .wf-btn {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px dashed #64748b;
+      border-radius: 6px;
+      padding: 4px 9px;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: var(--font-mono);
+    }
+    .wf-btn.on {
+      background: #fef3c7;
+      color: #78350f;
+      border-color: #f59e0b;
+    }
+
+    /* App Shell */
+    .app-frame {
+      margin: 14px auto;
+      max-width: 1440px;
+      height: calc(100vh - 78px);
+      min-height: 680px;
+      background: var(--surface);
+      border: 2px solid var(--border-strong);
+      border-radius: 10px;
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    }
+
+    /* Left Navigation Rail */
+    .rail {
+      background: var(--surface-alt);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 12px;
+      overflow-y: auto;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px 12px;
+      border-bottom: 1px dashed var(--border);
+      margin-bottom: 10px;
+    }
+    .brand-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+      font-size: 15px;
+      letter-spacing: 0.03em;
+    }
+    .wire-box {
+      width: 26px; height: 26px;
+      border: 2px solid var(--ink);
+      border-radius: 6px;
+      display: grid; place-items: center;
+      font-family: var(--font-mono);
+      font-weight: 800;
+      font-size: 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .cmdk-pill {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 6px 8px;
+      border: 1px dashed var(--border-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .cmdk-pill:hover { border-color: var(--accent); color: var(--ink); }
+    .nav-group-label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      padding: 8px 8px 4px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 9px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--ink-2);
+      border: 1px solid transparent;
+      margin-bottom: 2px;
+      font-weight: 500;
+    }
+    .nav-item:hover { background: var(--surface-muted); }
+    .nav-item.active {
+      background: var(--accent-soft);
+      border-color: var(--accent-border);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .pill {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .pill.green { background: var(--green-soft); color: var(--green); border-color: #a7f3d0; }
+    .pill.amber { background: var(--amber-soft); color: var(--amber); border-color: #fde68a; }
+    .pill.blue { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border); }
+    .pill.purple { background: var(--purple-soft); color: var(--purple); border-color: #ddd6fe; }
+    .pill.red { background: var(--red-soft); color: var(--red); border-color: #fecaca; }
+
+    .rail-footer {
+      border-top: 1px dashed var(--border);
+      padding-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .status-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px;
+      background: var(--surface);
+      font-size: 11px;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 3px;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px;
+    }
+    .dot.ok { background: #10b981; }
+    .dot.warn { background: #f59e0b; }
+
+    /* Main Workspace */
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .topbar {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .topbar h2 { margin: 0; font-size: 15px; }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 6px 11px;
+      border-radius: 6px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn:hover { background: var(--surface-alt); }
+    .btn.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .btn.primary:hover { background: #1d4ed8; }
+    .btn.success {
+      background: var(--green);
+      color: #fff;
+      border-color: var(--green);
+    }
+    .btn.danger {
+      background: var(--red-soft);
+      color: var(--red);
+      border-color: #fca5a5;
+    }
+    .btn.sm { padding: 4px 8px; font-size: 11px; }
+
+    .screen { display: none; flex: 1; overflow: hidden; }
+    .screen.active { display: flex; }
+
+    /* Wireframe Annotation Callouts */
+    .anno {
+      display: none;
+      margin-top: 6px;
+      padding: 5px 8px;
+      border: 1px dashed #d97706;
+      background: #fffbeb;
+      color: #92400e;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      border-radius: 4px;
+    }
+    body.show-annos .anno { display: block; }
+
+    /* Cards & Wireframe Boxes */
+    .card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 12px;
+    }
+    .card-dashed {
+      border: 1.5px dashed var(--border-strong);
+      border-radius: var(--radius);
+      background: var(--surface-alt);
+      padding: 12px;
+    }
+    .scroll { overflow-y: auto; }
+    .muted { color: var(--muted); }
+    .mono { font-family: var(--font-mono); }
+
+    /* Screen 1: Auth & Onboarding Gate */
+    .auth-wrap {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      background: repeating-linear-gradient(
+        -45deg,
+        #f8fafc,
+        #f8fafc 10px,
+        #f1f5f9 10px,
+        #f1f5f9 20px
+      );
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    .auth-grid {
+      width: 100%;
+      max-width: 980px;
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+    }
+    .step-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    /* Screen 2: Agent Command Center */
+    .chat-layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 220px 1fr 290px;
+      overflow: hidden;
+    }
+    .chat-threads {
+      border-right: 1px solid var(--border);
+      background: var(--surface-alt);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      overflow-y: auto;
+    }
+    .thread-item {
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .thread-item.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .chat-main {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .msg {
+      max-width: 88%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: var(--accent-soft);
+      border-color: var(--accent-border);
+    }
+    .msg.agent {
+      align-self: flex-start;
+      background: var(--surface);
+      width: 100%;
+      max-width: 100%;
+    }
+    .tool-trace {
+      border: 1px dashed var(--border-strong);
+      background: var(--surface-alt);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 8px 0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .hitl-card {
+      border: 2px solid #f59e0b;
+      background: #fffbeb;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-top: 10px;
+    }
+    .chat-composer {
+      border-top: 1px solid var(--border);
+      padding: 10px 14px;
+      background: var(--surface-alt);
+    }
+    .composer-box {
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .composer-input {
+      width: 100%;
+      border: none;
+      outline: none;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      resize: none;
+      min-height: 40px;
+    }
+    .chat-context {
+      border-left: 1px solid var(--border);
+      background: var(--surface-alt);
+      padding: 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* Screen 3: Transcript Vault */
+    .split-2 {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      overflow: hidden;
+    }
+    .list-pane {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--surface-alt);
+    }
+    .detail-pane {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .vtt-line {
+      display: grid;
+      grid-template-columns: 74px 120px 1fr;
+      gap: 10px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--surface-muted);
+      font-size: 12.5px;
+    }
+    .vtt-line:hover { background: var(--surface-alt); }
+
+    /* Screen 4: Teams & Channels Explorer */
+    .split-3 {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 270px 1fr 290px;
+      overflow: hidden;
+    }
+
+    /* Screen 5: M365 Hub & Playbooks */
+    .hub-wrap {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .playbook-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .hub-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    /* Screen 6: Settings & Skill Inspector */
+    .settings-wrap {
+      flex: 1;
+      padding: 18px;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 16px;
+      align-content: start;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 10px;
+    }
+    .field label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-2);
+      font-family: var(--font-mono);
+    }
+    .field input, .field select, .field textarea {
+      padding: 7px 9px;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+      background: var(--surface);
+    }
+
+    /* Modal Backdrop */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      z-index: 60;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: 100%;
+      max-width: 620px;
+      background: var(--surface);
+      border: 2px solid var(--ink);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+    }
+
+    @media (max-width: 1120px) {
+      .app-frame { grid-template-columns: 190px 1fr; }
+      .chat-layout, .split-3 { grid-template-columns: 1fr; }
+      .chat-threads, .chat-context { display: none; }
+      .playbook-grid { grid-template-columns: repeat(2, 1fr); }
+      .hub-grid, .settings-wrap, .auth-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body class="show-annos">
+
+  <!-- WIREFRAME CONTROL BAR -->
+  <div class="wf-bar">
+    <div class="wf-title">
+      <span class="wf-badge">UI Wireframe v1</span>
+      <span>T-ZONE — Microsoft Teams &amp; M365 AI Agent</span>
+    </div>
+    <div class="wf-tabs" id="wfTabs">
+      <button class="wf-tab" data-screen="auth">1. Auth &amp; Onboarding</button>
+      <button class="wf-tab active" data-screen="chat">2. Agent Command Center</button>
+      <button class="wf-tab" data-screen="transcripts">3. Transcript Vault</button>
+      <button class="wf-tab" data-screen="teams">4. Teams Explorer</button>
+      <button class="wf-tab" data-screen="hub">5. M365 Hub &amp; Playbooks</button>
+      <button class="wf-tab" data-screen="settings">6. LLM &amp; Skill Settings</button>
+    </div>
+    <div class="wf-actions">
+      <button class="wf-btn on" id="toggleAnnosBtn">Annotations: ON</button>
+      <button class="wf-btn" id="openCmdkBtn">Cmd+K Search</button>
+    </div>
+  </div>
+
+  <!-- APP SHELL WIREFRAME -->
+  <div class="app-frame">
+
+    <!-- LEFT NAVIGATION RAIL -->
+    <aside class="rail">
+      <div>
+        <div class="brand">
+          <div class="brand-logo">
+            <div class="wire-box">TZ</div>
+            <div>
+              <div>T-ZONE</div>
+              <div style="font-size:10px;font-weight:500;color:var(--muted)">msgraph skill agent</div>
+            </div>
+          </div>
+          <span class="pill blue">Docker</span>
+        </div>
+
+        <div class="cmdk-pill" id="railCmdk">
+          <span>Search Teams, transcripts...</span>
+          <span>⌘K</span>
+        </div>
+
+        <div class="nav-group-label">Workspace</div>
+        <div class="nav-item active" data-screen="chat"><span>Agent Chat</span><span class="pill blue">AI</span></div>
+        <div class="nav-item" data-screen="transcripts"><span>Transcript Vault</span><span class="pill green">14</span></div>
+        <div class="nav-item" data-screen="teams"><span>Teams &amp; Channels</span><span class="pill">42</span></div>
+        <div class="nav-item" data-screen="hub"><span>M365 Hub &amp; Playbooks</span><span class="pill purple">4</span></div>
+
+        <div class="nav-group-label">System</div>
+        <div class="nav-item" data-screen="auth"><span>Microsoft Sign-In</span><span class="pill green" id="navAuthBadge">OK</span></div>
+        <div class="nav-item" data-screen="settings"><span>LLM &amp; Skill Settings</span><span class="pill" id="navLlmBadge">DIAL</span></div>
+
+        <div class="anno">
+          Sidebar stays compact; shows live M365 auth state &amp; active LLM profile at all times.
+        </div>
+      </div>
+
+      <div class="rail-footer">
+        <div class="status-card">
+          <div class="status-row">
+            <span><span class="dot ok" id="msDot"></span><strong>MS Graph</strong></span>
+            <span class="mono" id="msUserText">preetham@epam</span>
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+            <span class="pill green">PKCE</span>
+            <span class="pill green">Device Claims ✓</span>
+            <span class="pill">24 scopes</span>
+          </div>
+        </div>
+
+        <div class="status-card">
+          <div class="status-row">
+            <span><span class="dot ok"></span><strong>LLM Active</strong></span>
+            <span class="mono" id="railLlmName">DIAL</span>
+          </div>
+          <div class="muted mono" style="font-size:10px;" id="railModelName">gpt-4.1-mini-2025-04-14</div>
+        </div>
+
+        <div class="status-card">
+          <div class="status-row">
+            <span><strong>FTS5 Sync Index</strong></span>
+            <span class="muted">2m ago</span>
+          </div>
+          <button class="btn sm" style="width:100%;margin-top:4px;" onclick="alert('Triggers incremental sync: chats + channel replies + online meeting transcripts')">↻ Sync Now</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="workspace">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h2 id="screenTitle">Agent Command Center</h2>
+          <span class="pill" id="screenSubtitle">msgraph SKILL.md + Local FTS5 Index</span>
+        </div>
+        <div class="topbar-right">
+          <span class="pill">Mode: <strong>Ask Before External Send</strong></span>
+          <button class="btn sm" data-jump="transcripts">Extract Transcripts</button>
+          <button class="btn sm" data-jump="settings">Switch LLM</button>
+          <button class="btn sm primary" data-jump="auth">MS Auth Status</button>
+        </div>
+      </header>
+
+      <!-- ================================================================ -->
+      <!-- SCREEN 1: AUTH & ONBOARDING GATE                                 -->
+      <!-- ================================================================ -->
+      <section class="screen" id="screen-auth">
+        <div class="auth-wrap">
+          <div class="auth-grid">
+            <div class="card" style="display:flex;flex-direction:column;gap:12px;">
+              <div>
+                <div class="step-badge">Step 1 · Microsoft 365 PKCE Auth (Frontend -> Docker Port 8484)</div>
+                <h3 style="margin:0 0 4px;">Connect Your Microsoft Teams &amp; M365 Account</h3>
+                <p class="muted" style="margin:0;">
+                  Uses the exact <code>msgraph.js</code> PKCE flow so your host browser + Intune Enterprise SSO attach device claims cleanly. Tokens persist inside the Docker volume (<code>~/.ms_graph_token_cache.json</code>) and auto-refresh for ~90 days.
+                </p>
+              </div>
+
+              <div class="card-dashed" id="authStateBox">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <strong id="authTitle">Status: Authenticated as Preetham Reddy</strong>
+                    <div class="muted mono" style="font-size:11px;" id="authSub">preetham_reddy@epam.com · Expires in 54m (refresh token active)</div>
+                  </div>
+                  <span class="pill green" id="authPill">LOGGED IN</span>
+                </div>
+              </div>
+
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn primary" id="simLoginBtn">Simulate "Sign in with Microsoft" (Popup)</button>
+                <button class="btn" id="simForceBtn">Re-auth (--force)</button>
+                <button class="btn danger" id="simLogoutBtn">Logout / Clear Cache</button>
+              </div>
+
+              <div class="card" style="background:var(--surface-alt);">
+                <div style="font-weight:600;margin-bottom:4px;">Fallback: Running Docker Remotely / Port 8484 Blocked?</div>
+                <div class="muted" style="font-size:11.5px;margin-bottom:6px;">
+                  If Microsoft redirects to <code>http://localhost:8484/?code=...</code> on a machine that can't reach the container, paste the redirected browser URL below to exchange the PKCE code directly:
+                </div>
+                <div style="display:flex;gap:6px;">
+                  <input type="text" style="flex:1;padding:6px 8px;border:1px solid var(--border-strong);border-radius:6px;font-family:var(--font-mono);font-size:11px;" placeholder="http://localhost:8484/?code=0.AXEA...&state=..." />
+                  <button class="btn">Complete Login</button>
+                </div>
+              </div>
+
+              <div class="anno">
+                AUTH BRIDGE DETAIL: Backend binds 0.0.0.0:8484 inside Docker (mapped 127.0.0.1:8484:8484). Frontend opens Entra ID URL via window.open(). Callback HTML posts message back to opener and closes tab automatically.
+              </div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div class="card">
+                <div class="step-badge">Token Claims Diagnostics (msgraph.js claims)</div>
+                <h4 style="margin:0 0 8px;">Identity &amp; Conditional Access Check</h4>
+                <div class="mono" style="font-size:11.5px;display:grid;grid-template-columns:110px 1fr;gap:5px;">
+                  <span class="muted">UPN:</span><span>user@company.com</span>
+                  <span class="muted">Device ID:</span><span style="color:var(--green);">✓ 8a4f...c912 (Compliant)</span>
+                  <span class="muted">Join Type:</span><span>WorkplaceJoined / Intune</span>
+                  <span class="muted">Auth Method:</span><span>pwd · mfa · fido</span>
+                </div>
+                <div style="margin-top:10px;font-size:11px;font-weight:600;">Granted Graph Scopes (24):</div>
+                <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;">
+                  <span class="pill">Chat.ReadWrite</span>
+                  <span class="pill">ChannelMessage.Read.All</span>
+                  <span class="pill">ChannelMessage.Send</span>
+                  <span class="pill">OnlineMeetings.Read</span>
+                  <span class="pill">OnlineMeetingTranscript.Read.All</span>
+                  <span class="pill">OnlineMeetingAiInsight.Read.All</span>
+                  <span class="pill">Mail.ReadWrite / Send</span>
+                  <span class="pill">Sites.ReadWrite.All</span>
+                  <span class="pill">Group.Read.All</span>
+                  <span class="pill">Tasks.ReadWrite</span>
+                  <span class="pill">Notes.ReadWrite</span>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="step-badge">Step 2 · Quick LLM Check</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div>
+                    <strong>EPAM DIAL (ai-proxy.lab.epam.com)</strong>
+                    <div class="muted mono" style="font-size:11px;">Model: gpt-4.1-mini-2025-04-14 · Seeded from .env</div>
+                  </div>
+                  <span class="pill green">Ready ✓</span>
+                </div>
+                <div style="margin-top:8px;display:flex;gap:8px;">
+                  <button class="btn sm" data-jump="settings">Configure DIAL / Copilot</button>
+                  <button class="btn sm primary" data-jump="chat">Launch Agent →</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================ -->
+      <!-- SCREEN 2: AGENT COMMAND CENTER                                   -->
+      <!-- ================================================================ -->
+      <section class="screen active" id="screen-chat">
+        <div class="chat-layout">
+          <!-- Left Conversations -->
+          <div class="chat-threads">
+            <button class="btn primary" style="width:100%;margin-bottom:6px;">+ New Agent Session</button>
+            <div class="nav-group-label" style="padding-left:2px;">Recent Sessions</div>
+            <div class="thread-item active">
+              <div style="font-weight:600;">Q4 Auth Release Prep</div>
+              <div class="muted" style="font-size:11px;">Transcripts + Teams + Channel post</div>
+            </div>
+            <div class="thread-item">
+              <div style="font-weight:600;">Unread Messages Triage</div>
+              <div class="muted" style="font-size:11px;">1:1 Chats &amp; unanswered threads</div>
+            </div>
+            <div class="thread-item">
+              <div style="font-weight:600;">Sprint 18 Standup Recap</div>
+              <div class="muted" style="font-size:11px;">7 transcripts -> Planner tasks</div>
+            </div>
+            <div class="thread-item">
+              <div style="font-weight:600;">SharePoint Architecture Search</div>
+              <div class="muted" style="font-size:11px;">Found 4 docs across 2 sites</div>
+            </div>
+            <div class="anno">
+              Persisted in SQLite so you can resume multi-turn Teams investigations across Docker restarts.
+            </div>
+          </div>
+
+          <!-- Center Chat Stream -->
+          <div class="chat-main">
+            <div class="chat-messages">
+              <div class="msg user">
+                <strong>You:</strong> Check all Teams chats and meeting transcripts from the last 5 days about the "SSO Gateway migration". Summarize decisions, extract my action items, and post a recap to the #platform-eng channel.
+              </div>
+
+              <div class="msg agent">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                  <strong>T-ZONE Agent</strong>
+                  <span class="pill blue">DIAL · gpt-4.1-mini · 4 tool calls</span>
+                </div>
+
+                <!-- Tool Trace Accordion -->
+                <div class="tool-trace">
+                  <div style="font-weight:700;margin-bottom:4px;">▾ Executed Skill &amp; Graph Tools (msgraph)</div>
+                  <div>1. <span style="color:var(--green);">✓</span> <code>search_fts_index(query="SSO Gateway", sources=["chats","channels","transcripts"], days=5)</code> → 14 matches</div>
+                  <div>2. <span style="color:var(--green);">✓</span> <code>msgraph transcripts --start 2026-11-21 --subject "Platform Sync" --vtt</code> → 2 transcripts loaded</div>
+                  <div>3. <span style="color:var(--green);">✓</span> <code>msgraph transcripts --meeting AAMk... --insights</code> → Copilot notes + 3 action items</div>
+                  <div>4. <span style="color:var(--amber);">⏸</span> <code>post_channel_message(team="Core Platform", channel="platform-eng")</code> → <em>Awaiting confirmation</em></div>
+                </div>
+
+                <div style="margin-top:8px;">
+                  <p style="margin:0 0 8px;"><strong>Summary Across Teams &amp; Transcripts:</strong></p>
+                  <ul style="margin:0 0 8px 18px;padding:0;">
+                    <li><strong>Decision (Platform Architecture Sync, Nov 24 · 14:12):</strong> <em>Sarah Chen</em> confirmed PKCE loopback will stay on port <code>8484</code> for Intune device claims. <a href="#" data-jump="transcripts">[Open Transcript @ 14:12]</a></li>
+                    <li><strong>Blocker raised in DM (Rahul Verma, Nov 25):</strong> Sandbox proxy strips custom headers unless whitelisted in nginx. <a href="#" data-jump="teams">[View 1:1 Chat]</a></li>
+                    <li><strong>Your Action Items:</strong>
+                      1) Verify DIAL streaming timeout in Docker nginx (Due Nov 27)
+                      2) Share `msgraph` scope checklist in `#platform-eng`
+                    </li>
+                  </ul>
+                </div>
+
+                <!-- Human-in-the-loop Confirmation Card -->
+                <div class="hitl-card" id="hitlCard">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <strong>⚠ Action Confirmation Required · Post to Teams Channel</strong>
+                    <span class="pill amber" id="hitlState">Pending Approval</span>
+                  </div>
+                  <div class="mono" style="font-size:11px;margin-bottom:6px;">
+                    Target: <strong>Core Platform &gt; #platform-eng</strong> (via <code>channels --send</code>)
+                  </div>
+                  <div style="background:#fff;border:1px solid #fcd34d;border-radius:6px;padding:8px;font-size:12px;margin-bottom:8px;">
+                    <strong>SSO Gateway Migration Recap (Nov 21–26)</strong><br/>
+                    • Decision: Retain PKCE loopback port 8484 for Intune device claims.<br/>
+                    • Action: Verifying nginx SSE headers &amp; sharing Graph scope list today.
+                  </div>
+                  <div style="display:flex;gap:8px;">
+                    <button class="btn sm success" id="approveActionBtn">✓ Approve &amp; Post to Channel</button>
+                    <button class="btn sm" onclick="alert('Opens inline editor for the message payload before sending')">✎ Edit Payload</button>
+                    <button class="btn sm danger" id="cancelActionBtn">✕ Cancel</button>
+                  </div>
+                  <div class="anno">
+                    SAFETY GUARDRAIL: External writes (Teams messages, emails, calendar invites, uploads) pause for 1-click confirmation unless user switches to Autonomous mode in Settings.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Composer -->
+            <div class="chat-composer">
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+                <button class="btn sm">Extract all week's transcripts</button>
+                <button class="btn sm">What did I miss in Teams today?</button>
+                <button class="btn sm">Draft release notes from Sprint chats</button>
+                <button class="btn sm">Create Planner tasks from my action items</button>
+              </div>
+              <div class="composer-box">
+                <textarea class="composer-input" placeholder="Ask anything across Teams chats, channels, transcripts, emails, SharePoint, Planner, or tell T-ZONE what to execute..."></textarea>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <div style="display:flex;gap:6px;align-items:center;">
+                    <span class="pill">Scope: All Teams + Transcripts + M365</span>
+                    <span class="pill">Skill: msgraph</span>
+                  </div>
+                  <button class="btn primary sm">Send Prompt ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Context Rail -->
+          <aside class="chat-context">
+            <div style="font-weight:700;">Grounded Sources Used</div>
+            <div class="card">
+              <div style="font-weight:600;">🎙 Platform Architecture Sync</div>
+              <div class="muted mono" style="font-size:10.5px;">Transcript · Nov 24 · 42 mins</div>
+              <div style="margin-top:4px;font-size:11.5px;">Matched 6 utterances by Sarah Chen &amp; Mike Ross.</div>
+              <button class="btn sm" style="margin-top:6px;" data-jump="transcripts">Inspect Transcript</button>
+            </div>
+            <div class="card">
+              <div style="font-weight:600;">💬 DM: Rahul Verma</div>
+              <div class="muted mono" style="font-size:10.5px;">1:1 Chat · Nov 25 · Resolved via /members</div>
+              <div style="margin-top:4px;font-size:11.5px;">"Proxy config keeps dropping SSE after 60s..."</div>
+              <button class="btn sm" style="margin-top:6px;" data-jump="teams">Open Chat</button>
+            </div>
+            <div class="card">
+              <div style="font-weight:600;">✨ Copilot Meeting Insights</div>
+              <div class="muted mono" style="font-size:10.5px;">/copilot/users/.../aiInsights</div>
+              <div style="margin-top:4px;font-size:11.5px;">3 structured action items extracted.</div>
+            </div>
+            <div class="anno">
+              Every factual claim links directly back to the exact transcript timestamp, Teams message, or Graph record.
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ================================================================ -->
+      <!-- SCREEN 3: TRANSCRIPT VAULT & BATCH EXTRACTOR                     -->
+      <!-- ================================================================ -->
+      <section class="screen" id="screen-transcripts">
+        <div class="split-2">
+          <!-- Left: Batch Extractor + Meeting List -->
+          <div class="list-pane">
+            <div style="padding:12px;border-bottom:1px solid var(--border);background:var(--surface);">
+              <div style="font-weight:700;margin-bottom:8px;">Batch Transcript Extractor</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+                <input type="date" value="2026-11-19" style="padding:5px;border:1px solid var(--border-strong);border-radius:6px;font-size:11px;" />
+                <input type="date" value="2026-11-26" style="padding:5px;border:1px solid var(--border-strong);border-radius:6px;font-size:11px;" />
+              </div>
+              <input type="text" placeholder="Filter by subject or organizer..." style="width:100%;padding:6px 8px;border:1px solid var(--border-strong);border-radius:6px;font-size:12px;margin-bottom:8px;" />
+              <div style="display:flex;gap:6px;">
+                <button class="btn primary sm" style="flex:1;" id="extractAllBtn">⬇ Extract All Transcripts + Insights</button>
+                <button class="btn sm">Scan</button>
+              </div>
+              <div id="extractProgress" style="margin-top:8px;display:none;">
+                <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;">
+                  <span>Extracting VTT &amp; Copilot insights...</span>
+                  <span class="mono" id="extractPct">0%</span>
+                </div>
+                <div style="height:7px;background:var(--surface-muted);border-radius:999px;overflow:hidden;border:1px solid var(--border);">
+                  <div id="extractBar" style="height:100%;width:0%;background:var(--green);transition:width 0.2s;"></div>
+                </div>
+              </div>
+              <div class="anno">
+                Discovers online meetings via calendarView + meeting chats, downloads VTT + plain text + Copilot insights, parses speakers, and indexes into SQLite FTS5.
+              </div>
+            </div>
+
+            <div class="scroll" style="padding:10px;display:flex;flex-direction:column;gap:8px;">
+              <div class="card" style="border-color:var(--accent);background:var(--accent-soft);cursor:pointer;">
+                <div style="display:flex;justify-content:space-between;">
+                  <strong>Platform Architecture Sync</strong>
+                  <span class="pill green">VTT + AI</span>
+                </div>
+                <div class="muted mono" style="font-size:11px;">Nov 24 · 14:00–14:45 · 5 speakers</div>
+              </div>
+              <div class="card" style="cursor:pointer;">
+                <div style="display:flex;justify-content:space-between;">
+                  <strong>Daily Standup — T-ZONE Squad</strong>
+                  <span class="pill green">VTT</span>
+                </div>
+                <div class="muted mono" style="font-size:11px;">Nov 25 · 10:00–10:18 · 7 speakers</div>
+              </div>
+              <div class="card" style="cursor:pointer;">
+                <div style="display:flex;justify-content:space-between;">
+                  <strong>Customer Discovery: Acme Corp</strong>
+                  <span class="pill green">VTT + AI</span>
+                </div>
+                <div class="muted mono" style="font-size:11px;">Nov 23 · 16:00–17:00 · 4 speakers</div>
+              </div>
+              <div class="card" style="cursor:pointer;">
+                <div style="display:flex;justify-content:space-between;">
+                  <strong>Sprint 18 Retrospective</strong>
+                  <span class="pill amber">Copilot 403 · VTT OK</span>
+                </div>
+                <div class="muted mono" style="font-size:11px;">Nov 20 · 15:00–15:50 · No Copilot license fallback</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Structured VTT Reader + Copilot Insights + Operations -->
+          <div class="detail-pane">
+            <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+              <div>
+                <h3 style="margin:0;">Platform Architecture Sync</h3>
+                <div class="muted mono" style="font-size:11px;">Meeting ID: MSm3Njg... · 184 segments · 42m 10s · Indexed in FTS5</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn sm primary" data-jump="chat">Ask Agent About This</button>
+                <button class="btn sm">Create Planner Tasks</button>
+                <button class="btn sm">Draft Follow-up Email</button>
+                <button class="btn sm">Export (.vtt / .md)</button>
+              </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 310px;flex:1;overflow:hidden;">
+              <!-- Speaker-Attributed VTT Timeline -->
+              <div class="scroll" style="padding:12px;">
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                  <input type="text" placeholder="Search inside this transcript..." style="flex:1;padding:6px 8px;border:1px solid var(--border-strong);border-radius:6px;font-size:12px;" />
+                  <select style="padding:6px 8px;border:1px solid var(--border-strong);border-radius:6px;font-size:12px;">
+                    <option>All Speakers (5)</option>
+                    <option>Sarah Chen (38%)</option>
+                    <option>Preetham Reddy (29%)</option>
+                    <option>Rahul Verma (19%)</option>
+                  </select>
+                </div>
+
+                <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+                  <div class="vtt-line">
+                    <span class="mono muted">00:11:48</span>
+                    <strong>Preetham R.</strong>
+                    <span>If we spin the agent inside Docker, we need the MS Graph PKCE callback reachable from the macOS host browser.</span>
+                  </div>
+                  <div class="vtt-line" style="background:var(--accent-soft);">
+                    <span class="mono" style="color:var(--accent);">00:12:15</span>
+                    <strong>Sarah Chen</strong>
+                    <span>Agreed — keep loopback matching on <code>http://localhost:8484</code> so Enterprise SSO still injects the Intune device ID claim.</span>
+                  </div>
+                  <div class="vtt-line">
+                    <span class="mono muted">00:13:02</span>
+                    <strong>Rahul Verma</strong>
+                    <span>I'll also verify our DIAL proxy deployment <code>gpt-4.1-mini-2025-04-14</code> handles parallel tool calls cleanly.</span>
+                  </div>
+                  <div class="vtt-line">
+                    <span class="mono muted">00:14:20</span>
+                    <strong>Sarah Chen</strong>
+                    <span>Let's also export action items directly to our Planner sprint board once confirmed.</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Copilot Insights + Agent Summary -->
+              <div class="scroll" style="border-left:1px solid var(--border);background:var(--surface-alt);padding:12px;display:flex;flex-direction:column;gap:10px;">
+                <div class="card">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <strong>Copilot AI Insights</strong>
+                    <span class="pill purple">M365 Copilot</span>
+                  </div>
+                  <div style="font-size:12px;">
+                    <strong>Key Notes:</strong>
+                    <ul style="margin:4px 0 8px 16px;padding:0;">
+                      <li>Docker PKCE auth bridge approved on port 8484.</li>
+                      <li>Fallback URL paste required for remote containers.</li>
+                    </ul>
+                    <strong>Action Items:</strong>
+                    <div style="margin-top:4px;">☐ Verify DIAL streaming timeout <em>(Preetham)</em></div>
+                    <div>☐ Confirm nginx SSE headers <em>(Rahul)</em></div>
+                  </div>
+                </div>
+
+                <div class="card">
+                  <strong>LLM Local Recap (Fallback / Enriched)</strong>
+                  <p class="muted" style="font-size:11.5px;margin:4px 0 8px;">
+                    When Copilot license is missing (403) or insights take up to 4h, T-ZONE generates instant summaries &amp; tasks using your configured DIAL/Copilot LLM directly from the parsed VTT!
+                  </p>
+                  <button class="btn sm primary" style="width:100%;">Generate LLM Summary Now</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================ -->
+      <!-- SCREEN 4: TEAMS & CHANNELS EXPLORER                              -->
+      <!-- ================================================================ -->
+      <section class="screen" id="screen-teams">
+        <div class="split-3">
+          <!-- Left Tree: Chats + Teams/Channels -->
+          <div class="list-pane">
+            <div style="padding:10px;border-bottom:1px solid var(--border);background:var(--surface);">
+              <input type="text" placeholder="Filter chats, people, teams, channels..." style="width:100%;padding:6px 8px;border:1px solid var(--border-strong);border-radius:6px;font-size:12px;" />
+              <div style="display:flex;gap:4px;margin-top:6px;">
+                <span class="pill blue">All</span>
+                <span class="pill">1:1 DMs</span>
+                <span class="pill">Meetings</span>
+                <span class="pill">Channels</span>
+              </div>
+            </div>
+            <div class="scroll" style="padding:8px;display:flex;flex-direction:column;gap:4px;">
+              <div class="nav-group-label">Direct &amp; Group Chats (Names Resolved)</div>
+              <div class="thread-item active">
+                <div style="display:flex;justify-content:space-between;"><strong>Rahul Verma</strong><span class="pill">1:1</span></div>
+                <div class="muted" style="font-size:11px;">Nginx SSE header question · 10m</div>
+              </div>
+              <div class="thread-item">
+                <div style="display:flex;justify-content:space-between;"><strong>Sarah Chen</strong><span class="pill">1:1</span></div>
+                <div class="muted" style="font-size:11px;">PKCE port 8484 verified · 2h</div>
+              </div>
+              <div class="thread-item">
+                <div style="display:flex;justify-content:space-between;"><strong>Platform Arch Sync</strong><span class="pill purple">Meeting</span></div>
+                <div class="muted" style="font-size:11px;">Transcript attached · Yesterday</div>
+              </div>
+
+              <div class="nav-group-label" style="margin-top:8px;">Joined Teams &amp; Channels</div>
+              <div class="thread-item">
+                <strong>▾ Core Platform</strong>
+                <div style="margin-top:4px;padding-left:10px;display:flex;flex-direction:column;gap:3px;">
+                  <div># General</div>
+                  <div style="color:var(--accent);font-weight:600;"># platform-eng</div>
+                  <div># incidents-alerts</div>
+                </div>
+              </div>
+              <div class="thread-item">
+                <strong>▸ T-ZONE Launch</strong>
+              </div>
+              <div class="anno">
+                Fixes msgraph.js limitation where 1:1 chats show "(direct message)" by expanding chat members &amp; resolving AAD display names.
+              </div>
+            </div>
+          </div>
+
+          <!-- Center: Thread Viewer + Replies -->
+          <div class="detail-pane">
+            <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <strong>Core Platform &gt; #platform-eng</strong>
+                <span class="muted mono" style="font-size:11px;margin-left:8px;">Expand Replies: ON</span>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <button class="btn sm">Members (24)</button>
+                <button class="btn sm">Channel Files</button>
+                <button class="btn sm primary" data-jump="chat">Summarize Channel</button>
+              </div>
+            </div>
+            <div class="scroll" style="padding:14px;display:flex;flex-direction:column;gap:10px;">
+              <div class="card">
+                <div style="display:flex;justify-content:space-between;">
+                  <strong>Sarah Chen</strong><span class="muted mono" style="font-size:11px;">Nov 25 11:20</span>
+                </div>
+                <p style="margin:4px 0 8px;">Can someone verify whether `ChannelMessage.Read.All` is consented on our tenant for automated standup recaps?</p>
+                <div style="border-left:2px solid var(--border-strong);padding-left:10px;display:flex;flex-direction:column;gap:6px;background:var(--surface-alt);padding:8px;border-radius:4px;">
+                  <div><strong>Preetham R.</strong> <span class="muted mono" style="font-size:10.5px;">11:24</span> — Yes, checked via `msgraph claims`, scope is active in our JWT!</div>
+                  <div><strong>Rahul Verma</strong> <span class="muted mono" style="font-size:10.5px;">11:29</span> — Awesome, let's wire the reply endpoint too.</div>
+                </div>
+              </div>
+            </div>
+            <div style="padding:10px 14px;border-top:1px solid var(--border);background:var(--surface-alt);display:flex;gap:8px;">
+              <input type="text" placeholder="Write message or reply to #platform-eng (or ask AI to draft)..." style="flex:1;padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;" />
+              <button class="btn">AI Draft</button>
+              <button class="btn primary">Send</button>
+            </div>
+          </div>
+
+          <!-- Right: Teams Operations Copilot -->
+          <aside class="chat-context">
+            <div style="font-weight:700;">Teams Quick Operations</div>
+            <div class="card">
+              <div style="font-weight:600;margin-bottom:6px;">Ask About Selected Channel / Chat</div>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                <button class="btn sm">Find unanswered questions</button>
+                <button class="btn sm">Extract decisions &amp; links</button>
+                <button class="btn sm">Draft status update from thread</button>
+                <button class="btn sm">Cross-reference with transcripts</button>
+              </div>
+            </div>
+            <div class="card">
+              <div style="font-weight:600;margin-bottom:4px;">Lookup Colleague / DM</div>
+              <input type="text" placeholder="Name or email..." style="width:100%;padding:5px 7px;border:1px solid var(--border-strong);border-radius:6px;font-size:11.5px;margin-bottom:6px;" />
+              <button class="btn sm" style="width:100%;">Resolve User &amp; Open DM</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ================================================================ -->
+      <!-- SCREEN 5: M365 HUB & PLAYBOOKS                                   -->
+      <!-- ================================================================ -->
+      <section class="screen" id="screen-hub">
+        <div class="hub-wrap">
+          <div>
+            <h3 style="margin:0 0 4px;">Agent Playbooks (From msgraph Skill Use Cases)</h3>
+            <div class="muted">One-click multi-step workflows combining Teams, Transcripts, Outlook, SharePoint, OneNote &amp; Planner.</div>
+          </div>
+          <div class="playbook-grid">
+            <div class="card" style="border-top:3px solid var(--accent);">
+              <strong>1. Communication Emails</strong>
+              <p class="muted" style="font-size:11.5px;">Gather Teams threads + transcript decisions and create an Outlook HTML draft (never auto-sends).</p>
+              <button class="btn sm primary" data-jump="chat">Run Playbook →</button>
+            </div>
+            <div class="card" style="border-top:3px solid var(--green);">
+              <strong>2. Customer Research</strong>
+              <p class="muted" style="font-size:11.5px;">Search customer call transcripts, emails &amp; SharePoint decks into a structured brief.</p>
+              <button class="btn sm primary" data-jump="chat">Run Playbook →</button>
+            </div>
+            <div class="card" style="border-top:3px solid var(--purple);">
+              <strong>3. Release Notes Gen</strong>
+              <p class="muted" style="font-size:11.5px;">Compile completed Planner tasks, Teams release channel &amp; sprint transcripts into release notes.</p>
+              <button class="btn sm primary" data-jump="chat">Run Playbook →</button>
+            </div>
+            <div class="card" style="border-top:3px solid var(--amber);">
+              <strong>4. Requirements Analysis</strong>
+              <p class="muted" style="font-size:11.5px;">Analyze stakeholder meeting VTTs + OneNote specs -> push structured stories to Planner / OneNote.</p>
+              <button class="btn sm primary" data-jump="chat">Run Playbook →</button>
+            </div>
+          </div>
+
+          <h3 style="margin:6px 0 0;">Connected Microsoft 365 Surfaces</h3>
+          <div class="hub-grid">
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;"><strong>📧 Outlook Mail</strong><span class="pill blue">7 unread</span></div>
+              <div class="muted" style="font-size:11.5px;margin:6px 0;">Read, search, draft with attachments (&lt;150MB), or send with approval.</div>
+              <button class="btn sm">Browse Inbox</button>
+            </div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;"><strong>📅 Calendar &amp; Availability</strong><span class="pill green">4 today</span></div>
+              <div class="muted" style="font-size:11.5px;margin:6px 0;">Check free/busy windows, list online meetings, schedule Teams calls.</div>
+              <button class="btn sm">Open Calendar</button>
+            </div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;"><strong>✅ Planner &amp; Microsoft To Do</strong><span class="pill amber">11 open</span></div>
+              <div class="muted" style="font-size:11.5px;margin:6px 0;">My tasks across M365 group plans + personal lists; create or mark 100% done.</div>
+              <button class="btn sm">Open Task Boards</button>
+            </div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;"><strong>📁 SharePoint &amp; OneDrive</strong><span class="pill">Sites &amp; Drives</span></div>
+              <div class="muted" style="font-size:11.5px;margin:6px 0;">Browse all document libraries recursively, download/upload &amp; ask AI about docs.</div>
+              <button class="btn sm">Browse Libraries</button>
+            </div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;"><strong>📓 OneNote Notebooks</strong><span class="pill">Read &amp; Write</span></div>
+              <div class="muted" style="font-size:11.5px;margin:6px 0;">Search pages across notebooks or save agent summaries straight to a section.</div>
+              <button class="btn sm">Browse Notes</button>
+            </div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;"><strong>👥 People &amp; Org Chart</strong><span class="pill">Directory</span></div>
+              <div class="muted" style="font-size:11.5px;margin:6px 0;">AI-ranked collaborators, manager, direct reports &amp; AAD IDs for assignments.</div>
+              <button class="btn sm">Explore Org</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================================ -->
+      <!-- SCREEN 6: SETTINGS — LLM CONFIGURATOR & SKILL INSPECTOR          -->
+      <!-- ================================================================ -->
+      <section class="screen" id="screen-settings">
+        <div class="settings-wrap">
+          <div class="card">
+            <div class="step-badge">Frontend-Configurable LLM Provider (Persisted in Server DB, Seeded from .env)</div>
+            <h3 style="margin:0 0 10px;">LLM Provider &amp; Model Configuration</h3>
+
+            <div style="display:flex;gap:8px;margin-bottom:14px;">
+              <button class="btn primary" id="pickDialBtn">Profile B: EPAM DIAL / Azure OpenAI</button>
+              <button class="btn" id="pickCopilotBtn">Profile A: GitHub Copilot</button>
+            </div>
+
+            <!-- DIAL Form -->
+            <div id="dialForm">
+              <div class="field">
+                <label>LLM_PROVIDER</label>
+                <input type="text" value="dial" readonly />
+              </div>
+              <div class="field">
+                <label>AZURE_ENDPOINT</label>
+                <input type="text" value="https://ai-proxy.lab.epam.com" />
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div class="field">
+                  <label>CHAT_MODEL_NAME (Deployment)</label>
+                  <input type="text" value="gpt-4.1-mini-2025-04-14" />
+                </div>
+                <div class="field">
+                  <label>API_VERSION</label>
+                  <input type="text" value="2024-02-01" />
+                </div>
+              </div>
+              <div class="field">
+                <label>EPAM_DIAL_API_KEY (Stored server-side, masked in UI)</label>
+                <input type="password" value="dial-placeholder-masked-key" />
+              </div>
+            </div>
+
+            <!-- Copilot Form -->
+            <div id="copilotForm" style="display:none;">
+              <div class="field">
+                <label>LLM_PROVIDER</label>
+                <input type="text" value="copilot" readonly />
+              </div>
+              <div class="field">
+                <label>SS_AGENT_LLM_MODE</label>
+                <select>
+                  <option value="agent_sdk">agent_sdk (Copilot SDK)</option>
+                  <option value="claude_sdk">claude_sdk</option>
+                  <option value="normal">normal</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>COPILOT_MODEL</label>
+                <input type="text" value="gpt-4.1" />
+              </div>
+              <div class="field">
+                <label>GITHUB_PAT / COPILOT_SDK_PAT</label>
+                <input type="password" placeholder="ghp_... (stored server-side)" />
+              </div>
+            </div>
+
+            <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+              <button class="btn primary" onclick="alert('Saved active LLM configuration to SQLite settings!')">Save &amp; Apply Live</button>
+              <button class="btn" id="testLlmBtn">Test Connection &amp; Tool Calling</button>
+              <span class="mono" style="font-size:11px;" id="testLlmOut"></span>
+            </div>
+
+            <div class="anno">
+              Keys are never returned raw to browser GET calls (masked like dial-0x...d782). Updating here switches the active provider immediately without restarting Docker.
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:14px;">
+            <div class="card">
+              <h4 style="margin:0 0 8px;">Agent Execution &amp; Safety Policy</h4>
+              <div class="field">
+                <label>WRITE ACTION APPROVAL MODE</label>
+                <select>
+                  <option>Ask confirmation before sending Teams msgs / emails / meetings (Recommended)</option>
+                  <option>Draft-only safe mode (emails -> Drafts, block channel posts)</option>
+                  <option>Autonomous (execute all tool calls immediately)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>MAX AGENT REASONING STEPS</label>
+                <input type="number" value="12" />
+              </div>
+            </div>
+
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <h4 style="margin:0;">Loaded Skill Inspector</h4>
+                <span class="pill green">Active</span>
+              </div>
+              <div class="mono" style="font-size:11px;">
+                <div><strong>Skill:</strong> skills/msgraph/SKILL.md</div>
+                <div><strong>CLI:</strong> skills/msgraph/scripts/msgraph.js</div>
+                <div><strong>Token Cache:</strong> /data/.ms_graph_token_cache.json</div>
+                <div><strong>Auth Port:</strong> 0.0.0.0:8484 -> localhost:8484</div>
+              </div>
+              <div style="margin-top:8px;padding:8px;background:var(--surface-alt);border:1px dashed var(--border);border-radius:6px;font-size:11px;">
+                Recent skill trace log:<br/>
+                <code>[21:20:04] msgraph teams --chats --json (212ms) ✓</code><br/>
+                <code>[21:20:06] msgraph transcripts --start 2026-11-19 (480ms) ✓</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- CMD+K MODAL WIREFRAME -->
+  <div class="modal-backdrop" id="cmdkModal">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <strong>Global Search Across Teams, Transcripts &amp; M365 (SQLite FTS5 + Live Graph)</strong>
+        <button class="btn sm" id="closeCmdkBtn">Esc</button>
+      </div>
+      <input type="text" placeholder="Type keywords e.g. 'PKCE', 'Q4 release', 'Sarah Chen'..." style="width:100%;padding:9px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;margin-bottom:10px;" />
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <div class="card" style="padding:8px;">
+          <div style="display:flex;justify-content:space-between;"><strong>🎙 Platform Architecture Sync (00:12:15)</strong><span class="pill green">Transcript</span></div>
+          <div class="muted" style="font-size:11.5px;">Sarah Chen: "...keep loopback matching on http://localhost:8484..."</div>
+        </div>
+        <div class="card" style="padding:8px;">
+          <div style="display:flex;justify-content:space-between;"><strong>💬 #platform-eng thread</strong><span class="pill blue">Channel</span></div>
+          <div class="muted" style="font-size:11.5px;">Preetham: "checked via msgraph claims, scope is active..."</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const META = {
+      auth:        ['Microsoft 365 Onboarding & PKCE Auth', 'Docker port 8484 loopback + Intune device claims'],
+      chat:        ['Agent Command Center', 'msgraph SKILL.md + Local FTS5 Index'],
+      transcripts: ['Transcript Vault & Batch Extractor', 'WebVTT speaker timeline + Copilot AI Insights'],
+      teams:       ['Teams & Channels Explorer', 'Resolved 1:1 chats, threads, replies & quick actions'],
+      hub:         ['M365 Unified Hub & Playbooks', 'Email, Calendar, Planner, To Do, SharePoint, OneNote & Org'],
+      settings:    ['LLM Configurator & Skill Inspector', 'Hot-swap EPAM DIAL / GitHub Copilot + Skill diagnostics']
+    };
+
+    function switchScreen(name) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById('screen-' + name).classList.add('active');
+      document.querySelectorAll('.wf-tab, .nav-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.screen === name);
+      });
+      document.getElementById('screenTitle').textContent = META[name][0];
+      document.getElementById('screenSubtitle').textContent = META[name][1];
+    }
+
+    document.querySelectorAll('.wf-tab, .nav-item, [data-jump]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        switchScreen(el.dataset.screen || el.dataset.jump);
+      });
+    });
+
+    // Annotations toggle
+    const annosBtn = document.getElementById('toggleAnnosBtn');
+    annosBtn.addEventListener('click', () => {
+      document.body.classList.toggle('show-annos');
+      const on = document.body.classList.contains('show-annos');
+      annosBtn.classList.toggle('on', on);
+      annosBtn.textContent = on ? 'Annotations: ON' : 'Annotations: OFF';
+    });
+
+    // Cmd+K Modal
+    const modal = document.getElementById('cmdkModal');
+    const openModal = () => modal.classList.add('open');
+    const closeModal = () => modal.classList.remove('open');
+    document.getElementById('openCmdkBtn').addEventListener('click', openModal);
+    document.getElementById('railCmdk').addEventListener('click', openModal);
+    document.getElementById('closeCmdkBtn').addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openModal(); }
+      if (e.key === 'Escape') closeModal();
+    });
+
+    // Auth state simulation
+    const setAuthState = (ok) => {
+      document.getElementById('authTitle').textContent = ok ? 'Status: Authenticated as Preetham Reddy' : 'Status: NOT_LOGGED_IN';
+      document.getElementById('authSub').textContent = ok ? 'user@company.com · Refresh token cached in Docker volume' : 'Click "Sign in with Microsoft" to launch PKCE popup';
+      const pill = document.getElementById('authPill');
+      pill.textContent = ok ? 'LOGGED IN' : 'NOT LOGGED IN';
+      pill.className = 'pill ' + (ok ? 'green' : 'red');
+      document.getElementById('navAuthBadge').textContent = ok ? 'OK' : 'LOGIN';
+      document.getElementById('navAuthBadge').className = 'pill ' + (ok ? 'green' : 'red');
+      document.getElementById('msDot').className = 'dot ' + (ok ? 'ok' : 'warn');
+      document.getElementById('msUserText').textContent = ok ? 'preetham@epam' : 'signed out';
+    };
+    document.getElementById('simLoginBtn').addEventListener('click', () => {
+      document.getElementById('authTitle').textContent = 'Waiting for Microsoft PKCE callback on localhost:8484...';
+      setTimeout(() => setAuthState(true), 600);
+    });
+    document.getElementById('simForceBtn').addEventListener('click', () => {
+      document.getElementById('authTitle').textContent = 'Re-authenticating (--force prompt=login)...';
+      setTimeout(() => setAuthState(true), 600);
+    });
+    document.getElementById('simLogoutBtn').addEventListener('click', () => setAuthState(false));
+
+    // HITL action card simulation
+    document.getElementById('approveActionBtn').addEventListener('click', () => {
+      const s = document.getElementById('hitlState');
+      s.textContent = 'Executed ✓ (msgId: 1764...9a)';
+      s.className = 'pill green';
+    });
+    document.getElementById('cancelActionBtn').addEventListener('click', () => {
+      const s = document.getElementById('hitlState');
+      s.textContent = 'Cancelled by user';
+      s.className = 'pill red';
+    });
+
+    // Transcript batch extraction simulation
+    document.getElementById('extractAllBtn').addEventListener('click', () => {
+      const box = document.getElementById('extractProgress');
+      const bar = document.getElementById('extractBar');
+      const pct = document.getElementById('extractPct');
+      box.style.display = 'block';
+      let p = 0;
+      const timer = setInterval(() => {
+        p = Math.min(100, p + 20);
+        bar.style.width = p + '%';
+        pct.textContent = p + '%';
+        if (p >= 100) clearInterval(timer);
+      }, 180);
+    });
+
+    // LLM Settings toggle
+    const dialBtn = document.getElementById('pickDialBtn');
+    const copBtn = document.getElementById('pickCopilotBtn');
+    dialBtn.addEventListener('click', () => {
+      document.getElementById('dialForm').style.display = 'block';
+      document.getElementById('copilotForm').style.display = 'none';
+      dialBtn.classList.add('primary'); copBtn.classList.remove('primary');
+      document.getElementById('navLlmBadge').textContent = 'DIAL';
+      document.getElementById('railLlmName').textContent = 'DIAL';
+      document.getElementById('railModelName').textContent = 'gpt-4.1-mini-2025-04-14';
+    });
+    copBtn.addEventListener('click', () => {
+      document.getElementById('dialForm').style.display = 'none';
+      document.getElementById('copilotForm').style.display = 'block';
+      copBtn.classList.add('primary'); dialBtn.classList.remove('primary');
+      document.getElementById('navLlmBadge').textContent = 'COPILOT';
+      document.getElementById('railLlmName').textContent = 'COPILOT';
+      document.getElementById('railModelName').textContent = 'gpt-4.1';
+    });
+    document.getElementById('testLlmBtn').addEventListener('click', () => {
+      const out = document.getElementById('testLlmOut');
+      out.style.color = 'var(--green)';
+      out.textContent = '✓ Connected (340ms) · Tool calling supported';
+    });
+  </script>
+</body>
+</html>

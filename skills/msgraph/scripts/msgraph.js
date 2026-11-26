@@ -1,0 +1,1962 @@
+#!/usr/bin/env node
+/**
+ * msgraph.js — Microsoft Graph API CLI for Claude Code skill
+ *
+ * Authentication: Authorization Code + PKCE via system browser.
+ * The browser-based flow allows the Microsoft Enterprise SSO plug-in (macOS/
+ * Intune) and WAM (Windows/Azure AD join) to attach device claims to the
+ * Entra ID sign-in, satisfying Conditional Access Policies that require
+ * managed/compliant devices.
+ *
+ * First time:   node msgraph.js login   (opens browser)
+ * Subsequent:   token refreshed silently from cache
+ *
+ * Prerequisites for device claims (CAP compliance):
+ *   - App registration must have http://localhost as a Mobile and desktop
+ *     applications redirect URI (loopback matching per RFC 8252).
+ *   - macOS: device enrolled in Intune + Microsoft Enterprise SSO Extension
+ *     deployed via MDM profile.
+ *   - Windows: device Azure AD joined (WAM handles it automatically).
+ *
+ * Dependencies: node >= 18 (built-in modules only — zero npm installs needed)
+ */
+
+'use strict';
+
+const crypto   = require('node:crypto');
+const http     = require('node:http');
+const https    = require('node:https');
+const fs       = require('node:fs');
+const path     = require('node:path');
+const os       = require('node:os');
+const { execFile } = require('node:child_process');
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const CLIENT_ID  = '3d7688c6-f449-4d04-8b0d-57d94818e922';
+const TENANT     = 'common';
+const AUTH_URL   = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/authorize`;
+const TOKEN_URL  = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`;
+const SCOPES     = [
+  'User.Read', 'Mail.Read', 'Mail.ReadWrite', 'Mail.Send',
+  'Calendars.Read', 'Calendars.ReadWrite',
+  'Files.Read', 'Files.ReadWrite',
+  'Sites.Read.All', 'Sites.ReadWrite.All', 'Chat.Read', 'Chat.ReadWrite',
+  'ChannelMessage.Read.All', 'ChannelMessage.Send',
+  'OnlineMeetingTranscript.Read.All', 'OnlineMeetings.Read',
+  'People.Read', 'Contacts.Read', 'offline_access',
+  'Notes.Read', 'Notes.ReadWrite', 'OnlineMeetingAiInsight.Read.All', 'Tasks.ReadWrite',
+  'Group.Read.All',
+].join(' ');
+const CACHE_FILE  = path.join(os.homedir(), '.ms_graph_token_cache.json');
+const GRAPH_BASE  = 'https://graph.microsoft.com/v1.0';
+const GRAPH_BETA  = 'https://graph.microsoft.com/beta';
+const TIMEOUT_MS  = 5 * 60 * 1000;
+
+// Graph accepts file attachments below 3 MB in a single POST; larger ones (up to 150 MB)
+// need an upload session whose chunks are a multiple of 320 KiB.
+const ATTACH_INLINE_MAX = 3 * 1024 * 1024;
+const ATTACH_MAX        = 150 * 1024 * 1024;
+const ATTACH_CHUNK      = 320 * 1024 * 10;
+const MIME_TYPES = {
+  '.pdf': 'application/pdf', '.txt': 'text/plain', '.csv': 'text/csv', '.json': 'application/json',
+  '.html': 'text/html', '.htm': 'text/html', '.zip': 'application/zip',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+// ── HTTP Helpers ──────────────────────────────────────────────────────────────
+function httpsRequest(urlStr, options = {}, body = null) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const req = https.request({
+      hostname: u.hostname,
+      path:     u.pathname + u.search,
+      method:   options.method || 'GET',
+      headers:  options.headers || {},
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 400) {
+          const err = new Error(`HTTP ${res.statusCode}`);
+          err.statusCode   = res.statusCode;
+          err.responseBody = text;
+          err.responseUrl  = urlStr;
+          err.headers      = res.headers;
+          return reject(err);
+        }
+        resolve({ status: res.statusCode, body: text, headers: res.headers });
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function oauthPost(urlStr, params) {
+  const body = new URLSearchParams(params).toString();
+  const res  = await httpsRequest(urlStr, {
+    method:  'POST',
+    headers: {
+      'Content-Type':   'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, body);
+  return JSON.parse(res.body);
+}
+
+async function graphGet(endpoint, token, params = {}) {
+  const qs  = new URLSearchParams(params).toString();
+  const url = `${GRAPH_BASE}${endpoint}${qs ? '?' + qs : ''}`;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await httpsRequest(url, { headers: { Authorization: `Bearer ${token}` } });
+      return JSON.parse(res.body);
+    } catch (e) {
+      if (e.statusCode === 429 && attempt < 2) {
+        const ra = parseInt(e.headers?.['retry-after'] || '', 10);
+        const waitS = Number.isFinite(ra) && ra > 0 ? Math.min(60, ra) : Math.min(30, 2 ** attempt * 2);
+        await new Promise(r => setTimeout(r, waitS * 1000));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+async function graphPost(endpoint, token, body) {
+  const bodyStr = JSON.stringify(body);
+  const res = await httpsRequest(`${GRAPH_BASE}${endpoint}`, {
+    method:  'POST',
+    headers: {
+      Authorization:    `Bearer ${token}`,
+      'Content-Type':   'application/json',
+      'Content-Length': Buffer.byteLength(bodyStr),
+    },
+  }, bodyStr);
+  return res.body ? JSON.parse(res.body) : {};
+}
+
+async function graphPatch(endpoint, token, body, extraHeaders = {}) {
+  const bodyStr = JSON.stringify(body);
+  const res = await httpsRequest(`${GRAPH_BASE}${endpoint}`, {
+    method:  'PATCH',
+    headers: {
+      Authorization:    `Bearer ${token}`,
+      'Content-Type':   'application/json',
+      'Content-Length': Buffer.byteLength(bodyStr),
+      ...extraHeaders,
+    },
+  }, bodyStr);
+  // Planner PATCH returns 204 with an empty body unless Prefer: return=representation is sent.
+  return res.body ? JSON.parse(res.body) : {};
+}
+
+function graphDownload(endpoint, token) {
+  function fetch(url, auth) {
+    return new Promise((resolve, reject) => {
+      const u       = new URL(url);
+      const headers = auth ? { Authorization: `Bearer ${auth}` } : {};
+      https.get({ hostname: u.hostname, path: u.pathname + u.search, headers }, res => {
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          res.resume();
+          fetch(res.headers.location, null).then(resolve, reject);
+          return;
+        }
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end',  () => {
+          if (res.statusCode >= 400) {
+            const err = new Error(`HTTP ${res.statusCode}`);
+            err.statusCode   = res.statusCode;
+            err.responseBody = Buffer.concat(chunks).toString('utf8');
+            return reject(err);
+          }
+          resolve(Buffer.concat(chunks));
+        });
+        res.on('error', reject);
+      }).on('error', reject);
+    });
+  }
+  return fetch(`${GRAPH_BASE}${endpoint}`, token);
+}
+
+async function graphUpload(endpoint, token, content, contentType = 'application/octet-stream') {
+  const res = await httpsRequest(`${GRAPH_BASE}${endpoint}`, {
+    method:  'PUT',
+    headers: {
+      Authorization:    `Bearer ${token}`,
+      'Content-Type':   contentType,
+      'Content-Length': content.length,
+    },
+  }, content);
+  return JSON.parse(res.body);
+}
+
+// ── Token Cache ───────────────────────────────────────────────────────────────
+function loadCache() {
+  if (!fs.existsSync(CACHE_FILE)) return null;
+  try { return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch { return null; }
+}
+
+function saveCache(data) {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+
+// ── HTML helpers ──────────────────────────────────────────────────────────────
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+// ── PKCE helpers ──────────────────────────────────────────────────────────────
+function generatePKCE() {
+  const verifier  = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+function openBrowser(url) {
+  const cb = err => {
+    if (err) console.error(`Warning: could not open browser automatically: ${err.message}`);
+  };
+  if (process.platform === 'win32') {
+    execFile('cmd', ['/c', 'start', '', url], cb);
+  } else {
+    execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], cb);
+  }
+}
+
+function startLocalServer() {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer();
+    server.listen(0, 'localhost', () => {
+      const { port } = server.address();
+      const waitForCode = () => new Promise((res, rej) => {
+        const timer = setTimeout(() => {
+          server.close();
+          rej(new Error('Authentication timed out (5 minutes). Run login again.'));
+        }, TIMEOUT_MS);
+
+        server.on('request', (req, response) => {
+          const url   = new URL(req.url, `http://localhost:${port}`);
+          const code  = url.searchParams.get('code');
+          const state = url.searchParams.get('state');
+          const error = url.searchParams.get('error');
+          const desc  = url.searchParams.get('error_description');
+
+          if (!code && !error) {
+            response.writeHead(404);
+            response.end();
+            return;
+          }
+
+          clearTimeout(timer);
+          const html = code
+            ? `<!DOCTYPE html><html><head><title>Login successful</title></head><body style="font-family:sans-serif;padding:40px">
+                <h2 style="color:#107c10">&#10003; Authentication successful</h2>
+                <p>You can close this tab and return to the terminal.</p>
+                <script>window.close();</script>
+               </body></html>`
+            : `<!DOCTYPE html><html><head><title>Login failed</title></head><body style="font-family:sans-serif;padding:40px">
+                <h2 style="color:#d13438">&#10007; Authentication failed</h2>
+                <p><strong>${error ? escapeHtml(error) : 'Unknown error'}</strong></p>
+                <p>${desc ? escapeHtml(desc) : ''}</p>
+               </body></html>`;
+
+          response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          response.end(html, () => {
+            server.close();
+            if (code) res({ code, state });
+            else rej(new Error(`Auth error: ${error}${desc ? ' — ' + desc : ''}`));
+          });
+        });
+      });
+      resolve({ port, waitForCode });
+    });
+    server.on('error', reject);
+  });
+}
+
+// ── Authentication ────────────────────────────────────────────────────────────
+async function tryRefresh(refreshTkn, username) {
+  try {
+    const res = await oauthPost(TOKEN_URL, {
+      client_id:     CLIENT_ID,
+      grant_type:    'refresh_token',
+      refresh_token: refreshTkn,
+      scope:         SCOPES,
+    });
+    if (res.access_token) {
+      saveCache({
+        access_token:  res.access_token,
+        refresh_token: res.refresh_token || refreshTkn,
+        expires_at:    Math.floor(Date.now() / 1000) + (res.expires_in || 3600),
+        username:      username || '',
+      });
+      return res.access_token;
+    }
+  } catch {}
+  return null;
+}
+
+async function pkceLogin(forcePrompt = false) {
+  const { verifier, challenge } = generatePKCE();
+  const state                   = crypto.randomBytes(16).toString('hex');
+  const { port, waitForCode }   = await startLocalServer();
+  const redirectUri             = `http://localhost:${port}`;
+
+  const authParams = new URLSearchParams({
+    client_id:             CLIENT_ID,
+    response_type:         'code',
+    redirect_uri:          redirectUri,
+    scope:                 SCOPES,
+    state,
+    code_challenge:        challenge,
+    code_challenge_method: 'S256',
+    prompt:                forcePrompt ? 'login' : 'select_account',
+  });
+
+  const fullAuthUrl = `${AUTH_URL}?${authParams}`;
+  console.log('\nOpening browser for Microsoft authentication...');
+  console.log('If the browser does not open, navigate to:\n');
+  console.log(`  ${fullAuthUrl}\n`);
+  openBrowser(fullAuthUrl);
+  console.log('Waiting for authentication (timeout: 5 minutes)...');
+
+  const { code, state: returnedState } = await waitForCode();
+  if (returnedState !== state) throw new Error('State mismatch — possible CSRF. Login aborted.');
+
+  process.stdout.write('Exchanging authorization code for tokens...');
+  const tokens = await oauthPost(TOKEN_URL, {
+    client_id:     CLIENT_ID,
+    grant_type:    'authorization_code',
+    code,
+    redirect_uri:  redirectUri,
+    code_verifier: verifier,
+    scope:         SCOPES,
+  });
+  console.log(' done.');
+
+  if (!tokens.access_token) throw new Error(`Token exchange failed: ${JSON.stringify(tokens)}`);
+
+  const me = await graphGet('/me', tokens.access_token, { $select: 'userPrincipalName,displayName,id' });
+  saveCache({
+    access_token:  tokens.access_token,
+    refresh_token: tokens.refresh_token || '',
+    expires_at:    Math.floor(Date.now() / 1000) + (tokens.expires_in || 3600),
+    username:      me.userPrincipalName || '',
+  });
+  return { token: tokens.access_token, me };
+}
+
+async function getAccessToken(forceLogin = false) {
+  if (!forceLogin) {
+    const cache = loadCache();
+    if (cache?.access_token) {
+      const now = Math.floor(Date.now() / 1000);
+      if (cache.expires_at && now < cache.expires_at - 60) return cache.access_token;
+      if (cache.refresh_token) {
+        const t = await tryRefresh(cache.refresh_token, cache.username);
+        if (t) return t;
+      }
+    }
+  }
+  const { token } = await pkceLogin();
+  return token;
+}
+
+async function getValidToken() {
+  return getAccessToken(false);
+}
+
+async function tryGetToken() {
+  const cache = loadCache();
+  if (!cache?.access_token) return null;
+  const now = Math.floor(Date.now() / 1000);
+  if (!cache.expires_at || now < cache.expires_at - 60) return cache.access_token;
+  if (cache.refresh_token) return tryRefresh(cache.refresh_token, cache.username);
+  return null;
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+function fmtDt(iso) {
+  if (!iso) return 'N/A';
+  try { return new Date(iso).toISOString().slice(0, 16).replace('T', ' '); }
+  catch { return (iso || '').slice(0, 16).replace('T', ' '); }
+}
+
+// Formats a Graph dateTimeTimeZone object ({ dateTime, timeZone }). To Do returns a
+// zone-less dateTime, so a UTC value would otherwise be parsed as local time by fmtDt.
+function fmtDtTz(dtz) {
+  if (!dtz?.dateTime) return 'N/A';
+  let s = dtz.dateTime;
+  if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(s) && (dtz.timeZone || '').toUpperCase() === 'UTC') s += 'Z';
+  return fmtDt(s);
+}
+
+function fmtSize(n) {
+  if (!n) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(1)} ${units[i]}`;
+}
+
+function stripHtml(s) {
+  return (s || '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\r?\n\s*\r?\n/g, '\n')
+      .trim();
+}
+
+function pad(str, len) {
+  str = String(str || '');
+  return str.length >= len ? str.slice(0, len) : str + ' '.repeat(len - str.length);
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+async function cmdLogin(args) {
+  const cache = loadCache();
+  if (cache?.access_token) {
+    const now = Math.floor(Date.now() / 1000);
+    if (cache.expires_at && now < cache.expires_at - 60 && !args.force) {
+      console.log(`Already logged in as: ${cache.username}`);
+      console.log('Use --force to re-authenticate.');
+      return;
+    }
+  }
+  const { token, me } = await pkceLogin(!!args.force);
+  console.log(`\nLogged in as: ${me.displayName} <${me.userPrincipalName}>`);
+  console.log(`User ID     : ${me.id}`);
+  console.log(`Token cached: ${CACHE_FILE}`);
+}
+
+function cmdLogout() {
+  if (fs.existsSync(CACHE_FILE)) {
+    fs.unlinkSync(CACHE_FILE);
+    console.log(`Logged out. Cache removed: ${CACHE_FILE}`);
+  } else {
+    console.log('No cached credentials found.');
+  }
+}
+
+async function cmdStatus() {
+  const cache = loadCache();
+  if (!cache?.access_token) {
+    console.log('NOT_LOGGED_IN');
+    console.log(`\nTo login, run:\n  node ${path.basename(process.argv[1])} login`);
+    return;
+  }
+  const token = await tryGetToken();
+  if (token) {
+    const updated = loadCache();
+    console.log(`Logged in as: ${updated?.username || cache.username}`);
+    console.log(`Cache file: ${CACHE_FILE}`);
+  } else {
+    console.log('TOKEN_EXPIRED');
+    console.log(`Account: ${cache.username}`);
+    console.log(`\nSession expired. Re-authenticate with:\n  node ${path.basename(process.argv[1])} login`);
+  }
+}
+
+async function cmdMe(args) {
+  const token = await getValidToken();
+  const me    = await graphGet('/me', token);
+  if (args.json) {
+    const fields = ['displayName','userPrincipalName','id','mail','jobTitle',
+      'department','officeLocation','businessPhones','mobilePhone'];
+    const out = {};
+    for (const k of fields) if (me[k] != null) out[k] = me[k];
+    console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+  console.log(`Name       : ${me.displayName    || 'N/A'}`);
+  console.log(`Email      : ${me.userPrincipalName || 'N/A'}`);
+  console.log(`Job Title  : ${me.jobTitle        || 'N/A'}`);
+  console.log(`Department : ${me.department      || 'N/A'}`);
+  console.log(`Office     : ${me.officeLocation  || 'N/A'}`);
+  console.log(`Phone      : ${(me.businessPhones || [])[0] || me.mobilePhone || 'N/A'}`);
+  console.log(`User ID    : ${me.id              || 'N/A'}`);
+}
+
+function splitList(v) {
+  return typeof v === 'string' ? v.split(',').map(x => x.trim()).filter(Boolean) : [];
+}
+
+function toRecipients(v) {
+  return splitList(v).map(address => ({ emailAddress: { address } }));
+}
+
+// Validate every attachment up front so a bad path never leaves a half-built draft behind.
+function resolveAttachments(v) {
+  return splitList(v).map(p => {
+    const file = path.resolve(p);
+    let st;
+    try { st = fs.statSync(file); } catch { throw new Error(`Attachment not found: ${p}`); }
+    if (!st.isFile()) throw new Error(`Attachment is not a file: ${p}`);
+    if (st.size > ATTACH_MAX) throw new Error(`Attachment too large (${fmtSize(st.size)}, max ${fmtSize(ATTACH_MAX)}): ${p}`);
+    const name = path.basename(file);
+    return { file, name, size: st.size, contentType: MIME_TYPES[path.extname(name).toLowerCase()] || 'application/octet-stream' };
+  });
+}
+
+async function addAttachment(token, messageId, att) {
+  const base = `/me/messages/${encodeURIComponent(messageId)}/attachments`;
+  if (att.size < ATTACH_INLINE_MAX) {
+    await graphPost(base, token, {
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name:          att.name,
+      contentType:   att.contentType,
+      contentBytes:  fs.readFileSync(att.file).toString('base64'),
+    });
+    return;
+  }
+  const session = await graphPost(`${base}/createUploadSession`, token, {
+    AttachmentItem: { attachmentType: 'file', name: att.name, size: att.size, contentType: att.contentType },
+  });
+  const fd = fs.openSync(att.file, 'r');
+  try {
+    for (let start = 0; start < att.size; start += ATTACH_CHUNK) {
+      const len = Math.min(ATTACH_CHUNK, att.size - start);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      // The upload URL is pre-authorised: sending the Graph bearer token to it is rejected.
+      await httpsRequest(session.uploadUrl, {
+        method:  'PUT',
+        headers: {
+          'Content-Length': len,
+          'Content-Range':  `bytes ${start}-${start + len - 1}/${att.size}`,
+          'Content-Type':   'application/octet-stream',
+        },
+      }, buf);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Create a draft in the Drafts folder. Never sends: the user reviews and sends it from Outlook.
+async function cmdEmailDraft(args, token) {
+  for (const k of ['to', 'cc', 'bcc', 'subject', 'body', 'bodyFile', 'attach']) {
+    if (args[k] === true) throw new Error(`--${k.replace(/[A-Z]/g, c => '-' + c.toLowerCase())} needs a value`);
+  }
+  if (args.body !== undefined && args.bodyFile !== undefined) throw new Error('Use either --body or --body-file, not both');
+
+  let content = args.body || '';
+  if (args.bodyFile !== undefined) {
+    try { content = fs.readFileSync(args.bodyFile, 'utf8'); } catch { throw new Error(`Cannot read --body-file: ${args.bodyFile}`); }
+  }
+  const html        = !!args.html || /\.html?$/i.test(args.bodyFile || '');
+  const attachments = resolveAttachments(args.attach);
+
+  const draft = await graphPost('/me/messages', token, {
+    subject:       args.subject || '(no subject)',
+    body:          { contentType: html ? 'HTML' : 'Text', content },
+    toRecipients:  toRecipients(args.to),
+    ccRecipients:  toRecipients(args.cc),
+    bccRecipients: toRecipients(args.bcc),
+  });
+
+  for (const att of attachments) {
+    try {
+      await addAttachment(token, draft.id, att);
+    } catch (e) {
+      throw new Error(`Draft ${draft.id} was created but attaching "${att.name}" failed: ${(e.responseBody || e.message).slice(0, 200)}`);
+    }
+  }
+
+  if (args.json) { console.log(JSON.stringify({ id: draft.id, webLink: draft.webLink, attachments: attachments.map(a => a.name) }, null, 2)); return; }
+  console.log(`Draft created (not sent): ${draft.subject}`);
+  console.log(`ID       : ${draft.id}`);
+  for (const a of attachments) console.log(`Attached : ${a.name} (${fmtSize(a.size)})`);
+  if (draft.webLink) console.log(`Open     : ${draft.webLink}`);
+}
+
+async function cmdEmails(args) {
+  const token = await getValidToken();
+
+  if (args.send) {
+    await graphPost('/me/sendMail', token, {
+      message: {
+        subject: args.subject || '(no subject)',
+        body:    { contentType: 'Text', content: args.body || '' },
+        toRecipients: [{ emailAddress: { address: args.send } }],
+      },
+    });
+    console.log(`Email sent to ${args.send}`);
+    return;
+  }
+
+  if (args.draft) {
+    await cmdEmailDraft(args, token);
+    return;
+  }
+
+  if (args.read) {
+    const msg  = await graphGet(`/me/messages/${args.read}`, token);
+    const from = msg.from?.emailAddress || {};
+    console.log(`Subject  : ${msg.subject}`);
+    console.log(`From     : ${from.name || ''} <${from.address || ''}>`);
+    console.log(`Date     : ${fmtDt(msg.receivedDateTime)}`);
+    console.log(`Read     : ${msg.isRead ? 'Yes' : 'No'}`);
+    console.log(`\n${'─'.repeat(60)}`);
+    const body = msg.body || {};
+    console.log(body.contentType === 'text' ? body.content : stripHtml(body.content || '').slice(0, 2000));
+    return;
+  }
+
+  const limit  = parseInt(args.limit) || 10;
+
+  if (args.conversation) {
+    // Graph rejects $orderby with $filter on conversationId ("InefficientFilter").
+    // Pull more rows than asked and sort client-side.
+    const cv = await graphGet('/me/messages', token, {
+      $filter: `conversationId eq '${args.conversation}'`,
+      $top:    Math.max(limit, 25),
+      $select: 'id,subject,from,sentDateTime,receivedDateTime,isRead,bodyPreview,conversationId',
+    });
+    let msgs = cv.value || [];
+    msgs.sort((a, b) => (b.sentDateTime || b.receivedDateTime || '').localeCompare(a.sentDateTime || a.receivedDateTime || ''));
+    msgs = msgs.slice(0, limit);
+    if (args.json) { console.log(JSON.stringify(msgs, null, 2)); return; }
+    if (!msgs.length) { console.log('No messages in this conversation.'); return; }
+    console.log(`\n${'Sent'.padEnd(16)}  ${'From'.padEnd(28)}  Subject`);
+    console.log('─'.repeat(80));
+    for (const m of msgs) {
+      const from = (m.from?.emailAddress?.name || '').slice(0, 28).padEnd(28);
+      console.log(`${fmtDt(m.sentDateTime || m.receivedDateTime).padEnd(16)}  ${from}  ${(m.subject || '(no subject)').slice(0, 40)}`);
+    }
+    return;
+  }
+
+  const params = {
+    $top:     limit,
+    $select:  'id,subject,from,receivedDateTime,isRead,hasAttachments,importance,bodyPreview,conversationId',
+    $orderby: 'receivedDateTime desc',
+  };
+  if (args.search) { params.$search = `"${args.search}"`; delete params.$orderby; }
+  if (args.unread)   params.$filter = 'isRead eq false';
+
+  const endpoint = args.folder ? `/me/mailFolders/${args.folder}/messages` : '/me/messages';
+  const data     = await graphGet(endpoint, token, params);
+  const emails   = data.value || [];
+
+  if (args.json) { console.log(JSON.stringify(emails, null, 2)); return; }
+  if (!emails.length) { console.log('No emails found.'); return; }
+
+  console.log(`\n${'ID'.padEnd(36)}  ${'Date'.padEnd(16)}  Rd  Subject`);
+  console.log('─'.repeat(80));
+  for (const e of emails) {
+    const mark    = e.isRead ? '✓' : '●';
+    const att     = e.hasAttachments ? '📎' : '  ';
+    const subject = (e.subject || '(no subject)').slice(0, 45);
+    const sender  = (e.from?.emailAddress?.name || '').slice(0, 20);
+    console.log(`${e.id.slice(0,36)}  ${fmtDt(e.receivedDateTime).padEnd(16)}  ${mark}   ${att} ${subject}  (${sender})`);
+  }
+}
+
+async function cmdCalendar(args) {
+  const token = await getValidToken();
+
+  if (args.create) {
+    if (!args.start || !args.end) {
+      console.error('Error: --create requires --start and --end (format: YYYY-MM-DDTHH:MM)');
+      process.exit(1);
+    }
+    const tz      = args.timezone || 'UTC';
+    const payload = {
+      subject: args.create,
+      start:   { dateTime: args.start, timeZone: tz },
+      end:     { dateTime: args.end,   timeZone: tz },
+    };
+    if (args.location) payload.location = { displayName: args.location };
+    if (args.body)     payload.body     = { contentType: 'Text', content: args.body };
+    if (args.attendees) {
+      payload.attendees = args.attendees.split(',').map(email => ({
+        emailAddress: { address: email.trim() },
+        type: 'required',
+      }));
+    }
+    const event = await graphPost('/me/events', token, payload);
+    console.log(`Event created: ${event.subject}`);
+    console.log(`ID: ${event.id}`);
+    return;
+  }
+
+  if (args.availability) {
+    const now   = new Date();
+    const start = args.start || now.toISOString().slice(0, 19);
+    const end   = args.end   || new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59).toISOString().slice(0, 19);
+    const view  = await graphGet('/me/calendarView', token, {
+      startDateTime: start,
+      endDateTime:   end,
+      $select:       'subject,start,end,showAs',
+      $orderby:      'start/dateTime',
+    });
+    const events = view.value || [];
+    if (!events.length) {
+      console.log(`You're free between ${start.slice(0,16)} and ${end.slice(0,16)}.`);
+    } else {
+      console.log(`\nBusy slots (${events.length} events):`);
+      for (const e of events)
+        console.log(`  ${fmtDt(e.start.dateTime)} — ${fmtDt(e.end.dateTime)}: ${e.subject || '(no title)'}`);
+    }
+    return;
+  }
+
+  const limit   = parseInt(args.limit) || 10;
+  const now     = new Date();
+  const yearEnd = new Date(now.getFullYear() + 1, 0, 1);
+  const data    = await graphGet('/me/calendarView', token, {
+    startDateTime: now.toISOString().slice(0, 19) + 'Z',
+    endDateTime:   yearEnd.toISOString().slice(0, 19) + 'Z',
+    $top:          limit,
+    $select:       'id,subject,start,end,location,organizer,isOnlineMeeting',
+    $orderby:      'start/dateTime',
+  });
+  const events = data.value || [];
+
+  if (args.json) { console.log(JSON.stringify(events, null, 2)); return; }
+  if (!events.length) { console.log('No upcoming events.'); return; }
+
+  console.log(`\n${'Date & Time'.padEnd(20)}    Title`);
+  console.log('─'.repeat(80));
+  for (const e of events) {
+    const online    = e.isOnlineMeeting ? '🎥' : '  ';
+    const title     = (e.subject || '(no title)').slice(0, 45);
+    const organizer = (e.organizer?.emailAddress?.name || '').slice(0, 20);
+    const loc       = (e.location?.displayName || '').slice(0, 20);
+    console.log(`${fmtDt(e.start?.dateTime).padEnd(20)}  ${online}  ${title}  (${organizer})${loc ? `  @ ${loc}` : ''}`);
+  }
+}
+
+async function cmdSharepoint(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (args.resolveSite) {
+    const data = await graphGet(`/sites/${args.resolveSite}`, token, { $select: 'id,displayName,webUrl' });
+    if (args.json) { console.log(JSON.stringify(data, null, 2)); return; }
+    console.log(`ID  : ${data.id}`);
+    console.log(`Name: ${data.displayName || 'N/A'}`);
+    console.log(`URL : ${data.webUrl || 'N/A'}`);
+    return;
+  }
+
+  if (args.sites) {
+    let data  = await graphGet('/me/followedSites', token, { $select: 'id,displayName,webUrl' });
+    let sites = data.value || [];
+    if (!sites.length) {
+      data  = await graphGet('/sites', token, { search: '*', $top: limit });
+      sites = data.value || [];
+    }
+    if (args.json) { console.log(JSON.stringify(sites, null, 2)); return; }
+    console.log(`\n${'ID'.padEnd(50)}  Name`);
+    console.log('─'.repeat(80));
+    for (const s of sites.slice(0, limit)) {
+      console.log(`${(s.id || '').padEnd(50)}  ${s.displayName || 'N/A'}`);
+      console.log(`  URL: ${s.webUrl || 'N/A'}`);
+    }
+    return;
+  }
+
+  if (args.site) {
+    const p  = args.path || 'root';
+    const ep = p === 'root'
+        ? `/sites/${args.site}/drive/root/children`
+        : `/sites/${args.site}/drive/root:/${p}:/children`;
+    const data  = await graphGet(ep, token, { $top: limit, $select: 'id,name,size,lastModifiedDateTime,file,folder' });
+    const items = data.value || [];
+    if (args.json) { console.log(JSON.stringify(items, null, 2)); return; }
+    console.log(`\nFiles in site ${args.site} / ${p}:`);
+    console.log('─'.repeat(60));
+    for (const item of items) {
+      const kind     = item.folder ? '📁' : '📄';
+      const size     = item.file   ? fmtSize(item.size) : '';
+      const modified = fmtDt(item.lastModifiedDateTime);
+      console.log(`  ${kind} ${pad(item.name, 40)} ${pad(size, 10)} ${modified}`);
+    }
+    return;
+  }
+
+  // --- Any document library (drive) of a site, not just the default one ---
+  const encPath = p => p.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+
+  if (args.drives) {
+    const data   = await graphGet(`/sites/${args.drives}/drives`, token, { $select: 'id,name,webUrl,driveType' });
+    const drives = data.value || [];
+    if (args.json) { console.log(JSON.stringify(drives, null, 2)); return; }
+    console.log(`\nDocument libraries in site ${args.drives}:`);
+    console.log('─'.repeat(60));
+    for (const d of drives) {
+      console.log(`${d.id}  ${d.name}`);
+      console.log(`  URL: ${d.webUrl || 'N/A'}`);
+    }
+    return;
+  }
+
+  if (args.drive && args.drive !== true) {
+    const driveId = args.drive;
+    const max     = parseInt(args.limit) || 200;
+    const select  = { $top: 200, $select: 'id,name,size,lastModifiedDateTime,file,folder,webUrl' };
+    const childrenEp = (itemId, p) => itemId ? `/drives/${driveId}/items/${itemId}/children`
+      : (p ? `/drives/${driveId}/root:/${encPath(p)}:/children` : `/drives/${driveId}/root/children`);
+
+    async function listFolder(itemId, p) {
+      const out = [];
+      let data = await graphGet(childrenEp(itemId, p), token, select);
+      for (;;) {
+        out.push(...(data.value || []));
+        const next = data['@odata.nextLink'];
+        if (!next || out.length >= max) break;
+        data = await graphGet(next.slice(GRAPH_BASE.length), token);
+      }
+      return out.slice(0, max);
+    }
+
+    const rows = [];
+    async function walk(itemId, p, prefix) {
+      for (const it of await listFolder(itemId, p)) {
+        rows.push({ ...it, relPath: prefix + it.name });
+        if (args.recursive && it.folder) await walk(it.id, null, `${prefix}${it.name}/`);
+      }
+    }
+    await walk(args.item, args.path, '');
+
+    if (args.json) { console.log(JSON.stringify(rows, null, 2)); return; }
+    console.log(`\nDrive ${driveId} / ${args.item ? 'item ' + args.item : (args.path || 'root')}:`);
+    console.log('─'.repeat(60));
+    for (const it of rows) {
+      const kind = it.folder ? '📁' : '📄';
+      const size = it.file ? fmtSize(it.size) : '';
+      console.log(`  ${kind} ${pad(it.relPath, 60)} ${pad(size, 10)} ${fmtDt(it.lastModifiedDateTime)}  ${it.id}`);
+    }
+    return;
+  }
+
+  if (args.driveFile) {
+    if (!args.path && !args.item) { console.error('Error: --drive-file DRIVE_ID requires --path FILE_PATH or --item ITEM_ID'); process.exit(1); }
+    const ep      = args.item ? `/drives/${args.driveFile}/items/${args.item}/content`
+                              : `/drives/${args.driveFile}/root:/${encPath(args.path)}:/content`;
+    const outPath = args.output || (args.path ? path.basename(args.path) : `downloaded_${String(args.item).slice(0, 8)}`);
+    const content = await graphDownload(ep, token);
+    fs.writeFileSync(outPath, content);
+    console.log(`Downloaded ${content.length} bytes to ${outPath}`);
+    return;
+  }
+
+  if (args.download) {
+    const outPath = args.output || `downloaded_${args.download.slice(0, 8)}`;
+    const content = await graphDownload(`/me/drive/items/${args.download}/content`, token);
+    fs.writeFileSync(outPath, content);
+    console.log(`Downloaded ${content.length} bytes to ${outPath}`);
+    return;
+  }
+
+  if (args.siteFile) {
+    if (!args.path) { console.error('Error: --site-file requires --path FILE_PATH'); process.exit(1); }
+    const outPath = args.output || path.basename(args.path);
+    const content = await graphDownload(`/sites/${args.siteFile}/drive/root:/${args.path}:/content`, token);
+    fs.writeFileSync(outPath, content);
+    console.log(`Downloaded ${content.length} bytes to ${outPath}`);
+    return;
+  }
+
+  console.log('SharePoint: --resolve-site HOSTNAME_PATH');
+  console.log('            --sites | --site SITE_ID [--path PATH]');
+  console.log('            --download ITEM_ID [--output FILE]');
+  console.log('            --site-file SITE_ID --path FILE_PATH [--output LOCAL_PATH]');
+  console.log('            --drives SITE_ID                                 (list all document libraries)');
+  console.log('            --drive DRIVE_ID [--path P | --item ID] [--recursive] [--limit N]');
+  console.log('            --drive-file DRIVE_ID (--path P | --item ID) [--output LOCAL_PATH]');
+}
+
+// Teams the user is a member of, read from /me/memberOf (Group.Read.All). The endpoint returns
+// every kind of group, and the team filter is applied client-side, so a single page cuts off
+// teams for users who belong to many groups. Follow @odata.nextLink to get them all.
+async function listMemberTeams(token) {
+  const teams = [];
+  let next = '/me/memberOf';
+  let params = { $select: 'id,displayName,description,resourceProvisioningOptions', $top: 999 };
+  while (next) {
+    const page = await graphGet(next, token, params);
+    for (const g of page.value || [])
+      if (Array.isArray(g.resourceProvisioningOptions) && g.resourceProvisioningOptions.includes('Team')) teams.push(g);
+    const nl = page['@odata.nextLink'];
+    next = nl ? nl.replace(GRAPH_BASE, '') : null;
+    params = {};
+  }
+  return teams;
+}
+
+async function cmdTeams(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (args.chats) {
+    // $expand=lastMessagePreview returns the true last-message timestamp + body.
+    // Graph's `lastUpdatedDateTime` on the chat is frequently stale (months/years
+    // behind), so callers that need recency MUST read lastMessagePreview.
+    const data  = await graphGet('/me/chats', token, { $top: limit, $expand: 'lastMessagePreview' });
+    const chats = data.value || [];
+    if (args.json) { console.log(JSON.stringify(chats, null, 2)); return; }
+    console.log(`\n${'Chat ID'.padEnd(50)}  ${'Type'.padEnd(10)}  Last msg            Topic`);
+    console.log('─'.repeat(80));
+    for (const c of chats) {
+      const last = c.lastMessagePreview?.createdDateTime || c.lastUpdatedDateTime || '';
+      console.log(`${(c.id || '').padEnd(50)}  ${(c.chatType || '').padEnd(10)}  ${fmtDt(last).padEnd(18)}  ${c.topic || '(direct message)'}`);
+    }
+    return;
+  }
+
+  if (args.lookupUser) {
+    const user = await graphGet(`/users/${args.lookupUser}`, token, {
+      $select: 'id,displayName,userPrincipalName,jobTitle,department',
+    });
+    const me = await graphGet('/me', token, { $select: 'id' });
+    console.log(`Display Name : ${user.displayName}`);
+    console.log(`Email        : ${user.userPrincipalName}`);
+    console.log(`AAD User ID  : ${user.id}`);
+    console.log(`Job Title    : ${user.jobTitle || 'N/A'}`);
+    console.log(`Department   : ${user.department || 'N/A'}`);
+    console.log(`\nYour AAD ID  : ${me.id}`);
+    console.log(`\nTo find the direct chat, run:`);
+    console.log(`  teams --chats   (look for a oneOnOne chat containing "${user.id.slice(0, 8)}")`);
+    console.log(`\nThen send with:`);
+    console.log(`  teams --dm ${args.lookupUser} --send "your message"`);
+    return;
+  }
+
+  if (args.dm && args.send) {
+    const user = await graphGet(`/users/${args.dm}`, token, { $select: 'id,displayName' });
+    const chatsData = await graphGet('/me/chats', token, { $top: 50, $select: 'id,topic,chatType' });
+    const chats = chatsData.value || [];
+    const directChat = chats.find(c => c.chatType === 'oneOnOne' && c.id.includes(user.id));
+    if (!directChat) {
+      console.error(`No existing direct chat found with ${user.displayName} (${args.dm}).`);
+      console.error(`They may need to message you first, or check --chats list manually.`);
+      process.exit(1);
+    }
+    const res = await graphPost(`/me/chats/${directChat.id}/messages`, token, {
+      body: { content: args.send },
+    });
+    console.log(`DM sent to ${user.displayName}. Message ID: ${res.id}`);
+    return;
+  }
+
+  if (args.messages) {
+    // Graph returns HTTP 400 if $select is used on the Teams messages endpoint — pass $top only.
+    // `--max N` paginates via @odata.nextLink up to N messages total (capped per page at 50 by Graph).
+    const max = args.max ? parseInt(args.max, 10) : null;
+    const perPage = max ? Math.min(50, max) : limit;
+    let next = `/me/chats/${args.messages}/messages?$top=${perPage}`;
+    const msgs = [];
+    while (next) {
+      const data = await graphGet(next.replace(GRAPH_BASE, '').replace('https://graph.microsoft.com/v1.0', ''), token, {});
+      for (const m of (data.value || [])) {
+        msgs.push(m);
+        if (max && msgs.length >= max) break;
+      }
+      if (max && msgs.length >= max) break;
+      const nl = data['@odata.nextLink'];
+      if (!nl || !max) break; // no pagination unless --max set
+      next = nl;
+    }
+    if (args.json) { console.log(JSON.stringify(msgs, null, 2)); return; }
+    console.log(`\nMessages in chat ${args.messages.slice(0, 20)}... (${msgs.length}):`);
+    console.log('─'.repeat(60));
+    for (const m of [...msgs].reverse()) {
+      const sender = m.from?.user?.displayName || 'System';
+      const body   = stripHtml(m.body?.content || '').slice(0, 200);
+      console.log(`[${fmtDt(m.createdDateTime)}] ${sender}: ${body}`);
+    }
+    return;
+  }
+
+  if (args.send && args.chatId) {
+    const res = await graphPost(`/me/chats/${args.chatId}/messages`, token, { body: { contentType: 'html', content: args.send } });
+    console.log(`Message sent. ID: ${res.id}`);
+    return;
+  }
+
+  if (args.teamsList) {
+    // Prefer /me/joinedTeams (needs Team.ReadBasic.All). Fall back to /me/memberOf
+    // filtered client-side to groups that are also teams (uses Group.Read.All,
+    // which the default scope set already includes).
+    let teams;
+    try {
+      const data = await graphGet('/me/joinedTeams', token, { $select: 'id,displayName,description' });
+      teams = data.value || [];
+    } catch (e) {
+      if (!/403|Forbidden/.test(e.message)) throw e;
+      teams = await listMemberTeams(token);
+    }
+    if (args.json) { console.log(JSON.stringify(teams, null, 2)); return; }
+    for (const t of teams) console.log(`${(t.id || '').slice(0, 36)}  ${t.displayName}`);
+    return;
+  }
+
+  console.log('Teams: --chats | --messages CHAT_ID | --send MSG --chat-id ID');
+  console.log('       --lookup-user EMAIL | --dm EMAIL --send MSG | --teams-list');
+}
+
+async function cmdChannels(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (!args.teamId) {
+    console.error('Error: --team-id TEAM_ID is required');
+    console.log('channels --team-id ID --list');
+    console.log('         --team-id ID --channel-id ID --messages [--limit N] [--expand-replies]');
+    console.log('         --team-id ID --channel-id ID --send MSG');
+    process.exit(1);
+  }
+
+  if (args.list) {
+    const data     = await graphGet(`/teams/${args.teamId}/channels`, token, { $select: 'id,displayName,description,membershipType' });
+    const channels = data.value || [];
+    if (args.json) { console.log(JSON.stringify(channels, null, 2)); return; }
+    console.log(`\n${'ID'.padEnd(50)}  Name`);
+    console.log('─'.repeat(80));
+    for (const c of channels)
+      console.log(`${(c.id || '').padEnd(50)}  ${c.displayName || 'N/A'}`);
+    return;
+  }
+
+  if (args.members) {
+    // Use the groups endpoint (teamId == groupId) so we don't need Team.ReadBasic.All;
+    // pages through every member of the underlying M365 group.
+    const members = [];
+    let next = `/groups/${args.teamId}/members/microsoft.graph.user`;
+    let params = { $select: 'id,displayName,userPrincipalName,mail', $top: 100 };
+    while (next) {
+      const page = await graphGet(next, token, params);
+      for (const m of page.value || []) members.push(m);
+      const nl = page['@odata.nextLink'];
+      if (!nl) break;
+      // Strip the base + use as endpoint; reuse no extra params (link contains them).
+      next = nl.replace('https://graph.microsoft.com/v1.0', '');
+      params = {};
+    }
+    if (args.json) { console.log(JSON.stringify(members, null, 2)); return; }
+    console.log(`\nTeam members (${members.length}):`);
+    console.log('─'.repeat(60));
+    for (const m of members)
+      console.log(`${(m.displayName || 'N/A').padEnd(34)}  ${m.userPrincipalName || m.mail || ''}`);
+    return;
+  }
+
+  if (!args.channelId) {
+    console.error('Error: --channel-id CHANNEL_ID is required');
+    process.exit(1);
+  }
+
+  if (args.replies) {
+    // --replies MSG_ID  →  replies to a specific channel message
+    const data = await graphGet(`/teams/${args.teamId}/channels/${args.channelId}/messages/${args.replies}/replies`, token, { $top: limit });
+    const reps = data.value || [];
+    if (args.json) { console.log(JSON.stringify(reps, null, 2)); return; }
+    console.log(`\nReplies to message ${args.replies.slice(0, 20)}...:`);
+    console.log('─'.repeat(60));
+    for (const r of [...reps].sort((a, b) => (a.createdDateTime || '').localeCompare(b.createdDateTime || ''))) {
+      const rs = r.from?.user?.displayName || 'System';
+      const rb = stripHtml(r.body?.content || '').slice(0, 200);
+      console.log(`[${fmtDt(r.createdDateTime)}] ${rs}: ${rb}`);
+    }
+    return;
+  }
+
+  if (args.messages) {
+    const params = { $top: limit };
+    if (args.expandReplies) params.$expand = 'replies';
+    const data = await graphGet(`/teams/${args.teamId}/channels/${args.channelId}/messages`, token, params);
+    const msgs = data.value || [];
+    if (args.json) { console.log(JSON.stringify(msgs, null, 2)); return; }
+    console.log(`\nMessages in channel ${args.channelId.slice(0, 30)}...:`);
+    console.log('─'.repeat(60));
+    for (const m of [...msgs].reverse()) {
+      const sender = m.from?.user?.displayName || 'System';
+      const body   = stripHtml(m.body?.content || '').slice(0, 200);
+      console.log(`[${fmtDt(m.createdDateTime)}] ${sender}: ${body}`);
+      if (args.expandReplies && Array.isArray(m.replies) && m.replies.length) {
+        const replies = [...m.replies].sort((a, b) => (a.createdDateTime || '').localeCompare(b.createdDateTime || ''));
+        for (const r of replies) {
+          const rs = r.from?.user?.displayName || 'System';
+          const rb = stripHtml(r.body?.content || '').slice(0, 160);
+          console.log(`    └─ [${fmtDt(r.createdDateTime)}] ${rs}: ${rb}`);
+        }
+      }
+    }
+    return;
+  }
+
+  if (args.send) {
+    const res = await graphPost(`/teams/${args.teamId}/channels/${args.channelId}/messages`, token, {
+      body: { contentType: 'html', content: args.send },
+    });
+    console.log(`Message sent. ID: ${res.id}`);
+    return;
+  }
+
+  console.log('channels --team-id ID --list');
+  console.log('         --team-id ID --channel-id ID --messages [--limit N]');
+  console.log('         --team-id ID --channel-id ID --replies MSG_ID [--limit N]');
+  console.log('         --team-id ID --channel-id ID --send MSG');
+}
+
+// ── Meeting AI Insights (Copilot recap) ────────────────────────────────────────
+// Lives in the Microsoft 365 Copilot API namespace and is keyed by user object ID
+// (not /me). The aiInsights navigation is documented under beta, so try v1.0 first
+// and fall back to beta on 404. Requires a Microsoft 365 Copilot license.
+async function getAiInsights(token, oid, meetingId, insightId) {
+  const suffix = insightId ? `/${insightId}` : '';
+  const ep     = `/copilot/users/${oid}/onlineMeetings/${meetingId}/aiInsights${suffix}`;
+  const headers = { Authorization: `Bearer ${token}` };
+  try {
+    const res = await httpsRequest(`${GRAPH_BASE}${ep}`, { headers });
+    return JSON.parse(res.body);
+  } catch (err) {
+    if (err.statusCode === 404) {
+      const res = await httpsRequest(`${GRAPH_BETA}${ep}`, { headers });
+      return JSON.parse(res.body);
+    }
+    throw err;
+  }
+}
+
+async function printMeetingInsights(token, oid, meetingId, args) {
+  let list;
+  try {
+    list = await getAiInsights(token, oid, meetingId);
+  } catch (err) {
+    if (err.statusCode === 403) {
+      console.error('AI insights require a Microsoft 365 Copilot license (and transcription/recording enabled for the meeting).');
+      return;
+    }
+    if (err.statusCode === 404) {
+      console.log('No AI insights available for this meeting (none generated yet, or unsupported meeting type).');
+      return;
+    }
+    throw err;
+  }
+
+  const insights = list.value || [];
+  if (!insights.length) {
+    console.log('No AI insights yet. Insights generate after the meeting ends and can take up to 4 hours.');
+    return;
+  }
+
+  const full = [];
+  for (const ins of insights) {
+    try { full.push(await getAiInsights(token, oid, meetingId, ins.id)); }
+    catch { full.push(ins); }
+  }
+
+  if (args.json) { console.log(JSON.stringify(full, null, 2)); return; }
+
+  for (const ai of full) {
+    console.log(`\n${'═'.repeat(60)}`);
+    console.log(`AI Insight ${ai.id || ''}  (${fmtDt(ai.createdDateTime)})`);
+
+    const notes = ai.meetingNotes || [];
+    if (notes.length) {
+      console.log('\nMeeting Notes:');
+      for (const n of notes) {
+        console.log(`  • ${n.title || ''}`);
+        if (n.text) console.log(`    ${n.text}`);
+        for (const sp of n.subpoints || []) {
+          console.log(`      – ${sp.title || ''}`);
+          if (sp.text) console.log(`        ${sp.text}`);
+        }
+      }
+    }
+
+    const items = ai.actionItems || [];
+    if (items.length) {
+      console.log('\nAction Items:');
+      for (const it of items)
+        console.log(`  ☐ ${it.title || ''}${it.ownerDisplayName ? `  (owner: ${it.ownerDisplayName})` : ''}`);
+    }
+
+    const mentions = ai.viewpoint?.mentionEvents || [];
+    if (mentions.length) {
+      console.log('\nMentions:');
+      for (const m of mentions)
+        console.log(`  @ ${fmtDt(m.eventDateTime)} ${m.speaker?.user?.displayName || ''}: ${(m.transcriptUtterance || '').slice(0, 200)}`);
+    }
+  }
+}
+
+async function cmdTranscriptsInsights(args, token) {
+  const me  = await graphGet('/me', token, { $select: 'id' });
+  const oid = me.id;
+
+  // Direct meeting ID short-circuits resolution.
+  if (args.meeting) {
+    await printMeetingInsights(token, oid, args.meeting, args);
+    return;
+  }
+
+  // Otherwise resolve online meetings via the calendar (same approach as --subject).
+  const startDate = args.start || new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
+  const endDate   = args.end || startDate;
+  const data = await graphGet('/me/calendarView', token, {
+    startDateTime: startDate + 'T00:00:00Z',
+    endDateTime:   endDate + 'T23:59:59Z',
+    $select:  'subject,start,isOnlineMeeting,onlineMeeting',
+    $top:     50,
+    $orderby: 'start/dateTime',
+  });
+  let events = (data.value || []).filter(e => e.isOnlineMeeting && e.onlineMeeting?.joinUrl);
+  if (args.subject) {
+    const kw = args.subject.toLowerCase();
+    events = events.filter(e => (e.subject || '').toLowerCase().includes(kw));
+  }
+  if (!events.length) { console.log('No matching online meetings found in range.'); return; }
+
+  for (const e of events) {
+    let meetingId = null;
+    try {
+      const om = await graphGet('/me/onlineMeetings', token, { $filter: `joinWebUrl eq '${e.onlineMeeting.joinUrl}'` });
+      meetingId = (om.value || [])[0]?.id || null;
+    } catch (err) {
+      console.log(`Could not resolve meeting ID for "${e.subject}": ${err.message}`);
+    }
+    if (!meetingId) continue;
+    console.log(`\nMeeting: ${e.subject}  (${fmtDt(e.start?.dateTime)})  — ${meetingId}`);
+    await printMeetingInsights(token, oid, meetingId, args);
+  }
+}
+
+async function cmdTranscripts(args) {
+  const token = await getValidToken();
+
+  if (args.insights) return cmdTranscriptsInsights(args, token);
+
+  if (args.list || (!args.meeting && !args.download)) {
+    const startDate = args.start || new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
+    const endDate   = args.end || startDate;
+    const startDT   = startDate + 'T00:00:00Z';
+    const endDT     = endDate   + 'T23:59:59Z';
+
+    const data = await graphGet('/me/calendarView', token, {
+      startDateTime: startDT,
+      endDateTime:   endDT,
+      $select: 'id,subject,start,end,isOnlineMeeting,onlineMeeting',
+      $top: 50,
+      $orderby: 'start/dateTime',
+    });
+    const events = (data.value || []).filter(e => e.isOnlineMeeting && e.onlineMeeting?.joinUrl);
+    if (args.subject) {
+      const kw = args.subject.toLowerCase();
+      const filtered = events.filter(e => (e.subject || '').toLowerCase().includes(kw));
+      if (!filtered.length) {
+        console.log(`No online meetings matching "${args.subject}" on ${startDate}.`);
+        return;
+      }
+      for (const e of filtered) {
+        console.log(`\nMeeting: ${e.subject}`);
+        console.log(`Start  : ${fmtDt(e.start?.dateTime)}`);
+        const joinUrl = e.onlineMeeting.joinUrl;
+        let meetingId = null;
+        try {
+          const om = await graphGet('/me/onlineMeetings', token, {
+            $filter: `joinWebUrl eq '${joinUrl}'`,
+          });
+          const meetings = om.value || [];
+          if (meetings.length) {
+            meetingId = meetings[0].id;
+            console.log(`Meeting ID: ${meetingId}`);
+          }
+        } catch (e2) {
+          console.log(`Could not resolve meeting ID: ${e2.message}`);
+        }
+        if (meetingId) {
+          try {
+            const td = await graphGet(`/me/onlineMeetings/${meetingId}/transcripts`, token);
+            const transcripts = td.value || [];
+            if (!transcripts.length) {
+              console.log('No transcripts available for this meeting.');
+            } else {
+              for (const t of transcripts)
+                console.log(`Transcript ID: ${t.id}  Created: ${fmtDt(t.createdDateTime)}`);
+            }
+          } catch (e3) {
+            console.log(`Transcripts error: ${e3.message}`);
+          }
+        }
+      }
+      return;
+    }
+
+    if (!events.length) { console.log('No online meetings found in range.'); return; }
+    console.log(`\nOnline meetings (${startDate} – ${endDate}):`);
+    console.log('─'.repeat(80));
+    for (const e of events)
+      console.log(`  ${fmtDt(e.start?.dateTime).padEnd(20)}  ${e.subject || '(no title)'}`);
+    return;
+  }
+
+  if (args.meeting && !args.transcript) {
+    const data = await graphGet(`/me/onlineMeetings/${args.meeting}/transcripts`, token);
+    const transcripts = data.value || [];
+    if (!transcripts.length) { console.log('No transcripts found for this meeting.'); return; }
+    console.log(`\nTranscripts for meeting ${args.meeting.slice(0, 30)}...:`);
+    console.log('─'.repeat(60));
+    for (const t of transcripts)
+      console.log(`ID: ${t.id}  Created: ${fmtDt(t.createdDateTime)}`);
+    return;
+  }
+
+  if (args.meeting && args.transcript) {
+    const contentType = args.vtt ? 'text/vtt' : 'text/plain';
+    const url = `${GRAPH_BASE}/me/onlineMeetings/${args.meeting}/transcripts/${args.transcript}/content`;
+    const res = await httpsRequest(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: contentType },
+    });
+    const text = res.body;
+    if (args.output) {
+      fs.writeFileSync(args.output, text, 'utf8');
+      console.log(`Transcript saved to ${args.output}`);
+    } else {
+      console.log(text);
+    }
+    return;
+  }
+
+  console.log('Usage: transcripts --start YYYY-MM-DD [--end YYYY-MM-DD] [--subject "keyword"]');
+  console.log('       transcripts --meeting MEETING_ID');
+  console.log('       transcripts --meeting MEETING_ID --transcript TRANSCRIPT_ID [--output FILE] [--vtt]');
+}
+
+async function cmdOnedrive(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (args.upload) {
+    if (!fs.existsSync(args.upload)) {
+      console.error(`File not found: ${args.upload}`);
+      process.exit(1);
+    }
+    const content = fs.readFileSync(args.upload);
+    const dest    = args.dest || path.basename(args.upload);
+    const result  = await graphUpload(`/me/drive/root:/${dest}:/content`, token, content);
+    console.log(`Uploaded: ${result.name} (${fmtSize(result.size)})`);
+    console.log(`ID: ${result.id}`);
+    return;
+  }
+
+  if (args.download) {
+    const outPath = args.output || `download_${args.download.slice(0, 8)}`;
+    const content = await graphDownload(`/me/drive/items/${args.download}/content`, token);
+    fs.writeFileSync(outPath, content);
+    console.log(`Downloaded ${fmtSize(content.length)} to ${outPath}`);
+    return;
+  }
+
+  if (args.info) {
+    const item = await graphGet(`/me/drive/items/${args.info}`, token);
+    if (args.json) { console.log(JSON.stringify(item, null, 2)); return; }
+    console.log(`Name    : ${item.name}`);
+    console.log(`Size    : ${fmtSize(item.size)}`);
+    console.log(`Modified: ${fmtDt(item.lastModifiedDateTime)}`);
+    console.log(`URL     : ${item.webUrl || 'N/A'}`);
+    return;
+  }
+
+  const p  = args.path || '';
+  const ep = p ? `/me/drive/root:/${p}:/children` : '/me/drive/root/children';
+  const data  = await graphGet(ep, token, { $top: limit, $select: 'id,name,size,lastModifiedDateTime,file,folder', $orderby: 'name' });
+  const items = data.value || [];
+
+  if (args.json) { console.log(JSON.stringify(items, null, 2)); return; }
+  if (!items.length) { console.log(`No files found in /${p || ''}`); return; }
+
+  console.log(`\nOneDrive: /${p || ''}`);
+  console.log('─'.repeat(60));
+  for (const item of items) {
+    const kind     = item.folder ? '📁' : '📄';
+    const size     = item.file   ? fmtSize(item.size) : '';
+    const modified = fmtDt(item.lastModifiedDateTime);
+    const count    = item.folder ? `  (${item.folder.childCount} items)` : '';
+    console.log(`  ${kind} ${item.id.slice(0,16)}  ${pad(item.name, 40)} ${pad(size, 10)} ${modified}${count}`);
+  }
+}
+
+async function cmdPeople(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (args.contacts) {
+    const params = { $top: limit, $select: 'displayName,emailAddresses,mobilePhone,jobTitle,companyName' };
+    if (args.search) params.$search = `"${args.search}"`;
+    const data     = await graphGet('/me/contacts', token, params);
+    const contacts = data.value || [];
+    if (args.json) { console.log(JSON.stringify(contacts, null, 2)); return; }
+    console.log(`\n${'Name'.padEnd(30)}  ${'Email'.padEnd(35)}  Title`);
+    console.log('─'.repeat(80));
+    for (const c of contacts) {
+      const email = (c.emailAddresses || [])[0]?.address || 'N/A';
+      console.log(`${pad(c.displayName || '', 30)}  ${pad(email, 35)}  ${c.jobTitle || ''}`);
+    }
+    return;
+  }
+
+  const params = { $top: limit };
+  if (args.search) params.$search = `"${args.search}"`;
+  const data   = await graphGet('/me/people', token, params);
+  const people = data.value || [];
+
+  if (args.json) { console.log(JSON.stringify(people, null, 2)); return; }
+  if (!people.length) { console.log('No people found.'); return; }
+
+  console.log(`\n${'Name'.padEnd(30)}  ${'Email'.padEnd(35)}  Title`);
+  console.log('─'.repeat(80));
+  for (const p of people) {
+    const email = (p.scoredEmailAddresses || [])[0]?.address || 'N/A';
+    console.log(`${pad(p.displayName || '', 30)}  ${pad(email, 35)}  ${p.jobTitle || ''}`);
+  }
+}
+
+function cmdClaims(args) {
+  const cache = loadCache();
+  if (!cache?.access_token) {
+    console.log('NOT_LOGGED_IN — run: node msgraph.js login');
+    process.exit(2);
+  }
+
+  let payload;
+  try {
+    const parts = cache.access_token.split('.');
+    if (parts.length !== 3) throw new Error('Not a JWT');
+    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    console.error('Error: could not decode cached token.');
+    process.exit(1);
+  }
+
+  if (args.json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  const tty = process.stdout.isTTY;
+  const c = {
+    reset:  tty ? '\x1b[0m'  : '',
+    bold:   tty ? '\x1b[1m'  : '',
+    dim:    tty ? '\x1b[2m'  : '',
+    cyan:   tty ? '\x1b[36m' : '',
+    green:  tty ? '\x1b[32m' : '',
+    red:    tty ? '\x1b[31m' : '',
+    yellow: tty ? '\x1b[33m' : '',
+    white:  tty ? '\x1b[97m' : '',
+    gray:   tty ? '\x1b[90m' : '',
+  };
+
+  const W    = 54;
+  const line = () => `${c.gray}${'─'.repeat(W)}${c.reset}`;
+  const section = label => `\n${c.bold}${c.cyan}  ${label}${c.reset}\n${line()}`;
+  const row = (label, value, color = c.white) =>
+    `  ${c.gray}${label.padEnd(12)}${c.reset}  ${color}${value}${c.reset}`;
+  const absent = `${c.dim}(not present)${c.reset}`;
+
+  const now      = Math.floor(Date.now() / 1000);
+  const expTs    = payload.exp || 0;
+  const iatTs    = payload.iat || 0;
+  const secsLeft = expTs - now;
+  const minsLeft = Math.floor(secsLeft / 60);
+  const expStr   = expTs
+    ? new Date(expTs * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    : 'N/A';
+  const iatStr   = iatTs
+    ? new Date(iatTs * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    : 'N/A';
+  const expiryHint = secsLeft > 0
+    ? `${c.dim} (expires in ${minsLeft}m)${c.reset}`
+    : `${c.red} (EXPIRED)${c.reset}`;
+
+  const deviceId = payload.deviceid || payload.device_id || null;
+  const upn      = payload.upn || payload.unique_name || 'N/A';
+
+  console.log(`\n${c.bold}${c.cyan}╭${'─'.repeat(W)}╮${c.reset}`);
+  console.log(`${c.bold}${c.cyan}│${c.reset}  ${c.bold}Token Claims${c.reset}  ${c.gray}${upn.slice(0, W - 16).padEnd(W - 14)}${c.cyan}│${c.reset}`);
+  console.log(`${c.bold}${c.cyan}╰${'─'.repeat(W)}╯${c.reset}`);
+
+  console.log(section('IDENTITY'));
+  console.log(row('UPN',       upn));
+  console.log(row('Object ID', payload.oid || 'N/A', c.gray));
+  console.log(row('Tenant ID', payload.tid || 'N/A', c.gray));
+  console.log(row('Issued',    iatStr, c.dim));
+  console.log(row('Expires',   expStr) + expiryHint);
+
+  console.log(section('DEVICE CLAIMS'));
+  if (deviceId) {
+    console.log(row('Device ID', deviceId, c.green) + `  ${c.green}✓ present${c.reset}`);
+  } else {
+    console.log(row('Device ID', '(not present)', c.red) + `  ${c.red}✗${c.reset}`);
+    console.log(`\n  ${c.yellow}⚠  Device claims are missing.${c.reset}`);
+    console.log(`  ${c.dim}   SSO Extension may not be deployed, or this device${c.reset}`);
+    console.log(`  ${c.dim}   is not registered in Entra ID.${c.reset}`);
+  }
+  console.log(row('Join Type', payload.join_type            || absent));
+  console.log(row('MDM URL',   payload.mdm_compliance_url   || absent));
+
+  console.log(section('AUTH METHODS'));
+  const amrList = Array.isArray(payload.amr) ? payload.amr : (payload.amr || '').split(',');
+  const amrFmt  = amrList.map(m => `${c.bold}${m.trim()}${c.reset}`).join(`  ${c.gray}·${c.reset}  `);
+  console.log(`  ${amrFmt}`);
+
+  console.log(section('SCOPES'));
+  const scopes    = (payload.scp || '').split(' ').filter(Boolean).sort();
+  const colWidth  = 26;
+  const cols      = 2;
+  for (let i = 0; i < scopes.length; i += cols) {
+    const row2 = scopes.slice(i, i + cols)
+      .map(s => `${c.dim}•${c.reset} ${s.padEnd(colWidth)}`)
+      .join('  ');
+    console.log(`  ${row2}`);
+  }
+  console.log('');
+}
+
+async function cmdOrg(args) {
+  const token = await getValidToken();
+
+  if (args.manager) {
+    try {
+      const mgr = await graphGet('/me/manager', token);
+      console.log(`Manager: ${mgr.displayName} <${mgr.userPrincipalName}>`);
+      console.log(`Title  : ${mgr.jobTitle || 'N/A'}`);
+    } catch (err) {
+      if (err.statusCode === 404) console.log('No manager found (you may be at the top of the org).');
+      else throw err;
+    }
+    return;
+  }
+
+  if (args.reports) {
+    const data    = await graphGet('/me/directReports', token, { $select: 'displayName,userPrincipalName,jobTitle' });
+    const reports = data.value || [];
+    console.log(`\nDirect Reports (${reports.length}):`);
+    for (const r of reports)
+      console.log(`  ${pad(r.displayName || '', 30)}  ${r.userPrincipalName}`);
+    return;
+  }
+
+  try {
+    const mgr = await graphGet('/me/manager', token);
+    console.log(`Manager: ${mgr.displayName}`);
+  } catch {}
+  const reports    = (await graphGet('/me/directReports', token, { $select: 'displayName' })).value || [];
+  console.log(`Direct Reports: ${reports.length}`);
+  const colleagues = (await graphGet('/me/people', token, { $top: 5 })).value || [];
+  console.log('\nFrequent colleagues:');
+  for (const p of colleagues) console.log(`  ${p.displayName}`);
+}
+
+async function cmdOnenote(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (args.notebooks) {
+    const data      = await graphGet('/me/onenote/notebooks', token, { $top: limit, $select: 'id,displayName,lastModifiedDateTime' });
+    const notebooks = data.value || [];
+    if (args.json) { console.log(JSON.stringify(notebooks, null, 2)); return; }
+    if (!notebooks.length) { console.log('No notebooks found.'); return; }
+    console.log(`\n${'ID'.padEnd(36)}  ${'Modified'.padEnd(18)}  Name`);
+    console.log('─'.repeat(80));
+    for (const nb of notebooks)
+      console.log(`${(nb.id || '').padEnd(36)}  ${fmtDt(nb.lastModifiedDateTime).padEnd(18)}  ${nb.displayName || 'N/A'}`);
+    return;
+  }
+
+  if (args.sections) {
+    const data     = await graphGet(`/me/onenote/notebooks/${args.sections}/sections`, token, { $top: limit, $select: 'id,displayName,lastModifiedDateTime' });
+    const sections = data.value || [];
+    if (args.json) { console.log(JSON.stringify(sections, null, 2)); return; }
+    if (!sections.length) { console.log('No sections found.'); return; }
+    console.log(`\nSections in notebook ${args.sections.slice(0, 20)}...:`);
+    console.log(`${'ID'.padEnd(36)}  Name`);
+    console.log('─'.repeat(70));
+    for (const s of sections)
+      console.log(`${(s.id || '').padEnd(36)}  ${s.displayName || 'N/A'}`);
+    return;
+  }
+
+  if (args.pages) {
+    const data  = await graphGet(`/me/onenote/sections/${args.pages}/pages`, token, { $top: limit, $select: 'id,title,lastModifiedDateTime' });
+    const pages = data.value || [];
+    if (args.json) { console.log(JSON.stringify(pages, null, 2)); return; }
+    if (!pages.length) { console.log('No pages found.'); return; }
+    console.log(`\nPages in section ${args.pages.slice(0, 20)}...:`);
+    console.log(`${'ID'.padEnd(36)}  ${'Modified'.padEnd(18)}  Title`);
+    console.log('─'.repeat(80));
+    for (const p of pages)
+      console.log(`${(p.id || '').padEnd(36)}  ${fmtDt(p.lastModifiedDateTime).padEnd(18)}  ${p.title || '(untitled)'}`);
+    return;
+  }
+
+  if (args.read) {
+    const res  = await httpsRequest(`${GRAPH_BASE}/me/onenote/pages/${args.read}/content`, { headers: { Authorization: `Bearer ${token}` } });
+    if (args.json) { console.log(JSON.stringify({ id: args.read, content: res.body })); return; }
+    console.log(stripHtml(res.body));
+    return;
+  }
+
+  if (args.search) {
+    const data  = await graphGet('/me/onenote/pages', token, { $search: `"${args.search}"`, $top: limit, $select: 'id,title,createdDateTime' });
+    const pages = data.value || [];
+    if (args.json) { console.log(JSON.stringify(pages, null, 2)); return; }
+    if (!pages.length) { console.log(`No pages found matching "${args.search}".`); return; }
+    console.log(`\nSearch results for "${args.search}" (${pages.length}):`);
+    console.log(`${'ID'.padEnd(36)}  Title`);
+    console.log('─'.repeat(70));
+    for (const p of pages)
+      console.log(`${(p.id || '').padEnd(36)}  ${p.title || '(untitled)'}`);
+    return;
+  }
+
+  if (args.create) {
+    if (!args.section) {
+      console.error('Error: --create requires --section SECTION_ID');
+      process.exit(1);
+    }
+    const htmlBody = `<!DOCTYPE html><html><head><title>${args.create}</title></head><body>${args.body || ''}</body></html>`;
+    const res = await httpsRequest(`${GRAPH_BASE}/me/onenote/sections/${args.section}/pages`, {
+      method:  'POST',
+      headers: {
+        Authorization:    `Bearer ${token}`,
+        'Content-Type':   'text/html',
+        'Content-Length': Buffer.byteLength(htmlBody),
+      },
+    }, htmlBody);
+    const page = JSON.parse(res.body);
+    console.log(`Page created: ${page.title || args.create}`);
+    console.log(`ID: ${page.id}`);
+    return;
+  }
+
+  console.log('OneNote: --notebooks | --sections NOTEBOOK_ID | --pages SECTION_ID');
+  console.log('         --read PAGE_ID | --search QUERY');
+  console.log('         --create TITLE --section SECTION_ID [--body CONTENT]');
+}
+
+async function cmdPlanner(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  // Plans shared with me (single call; plans live in M365 groups → needs Group.Read.All).
+  // Planner rejects OData params ($top/$select/$filter return HTTP 400) — fetch all, slice client-side.
+  if (args.plans) {
+    const data  = await graphGet('/me/planner/plans', token);
+    const plans = (data.value || []).slice(0, limit);
+    if (args.json) { console.log(JSON.stringify(plans, null, 2)); return; }
+    if (!plans.length) { console.log('No plans found.'); return; }
+    console.log(`\n${'Plan ID'.padEnd(30)}  Title`);
+    console.log('─'.repeat(70));
+    for (const p of plans)
+      console.log(`${(p.id || '').padEnd(30)}  ${p.title || '(untitled)'}`);
+    return;
+  }
+
+  // Tasks assigned to me (returns planId/bucketId only — no names). No OData params on Planner.
+  if (args.myTasks) {
+    const data  = await graphGet('/me/planner/tasks', token);
+    const tasks = (data.value || []).slice(0, limit);
+    if (args.json) { console.log(JSON.stringify(tasks, null, 2)); return; }
+    if (!tasks.length) { console.log('No tasks assigned to you.'); return; }
+    console.log(`\n${'Task ID'.padEnd(30)}  ${'%'.padEnd(4)}  ${'Due'.padEnd(16)}  Title`);
+    console.log('─'.repeat(80));
+    for (const t of tasks) {
+      const due = t.dueDateTime ? fmtDt(t.dueDateTime) : '';
+      console.log(`${(t.id || '').padEnd(30)}  ${String(t.percentComplete ?? 0).padEnd(4)}  ${pad(due, 16)}  ${t.title || '(untitled)'}`);
+    }
+    return;
+  }
+
+  // Buckets (columns) in a plan.
+  if (args.planId && args.buckets) {
+    const data    = await graphGet(`/planner/plans/${args.planId}/buckets`, token);
+    const buckets = data.value || [];
+    if (args.json) { console.log(JSON.stringify(buckets, null, 2)); return; }
+    if (!buckets.length) { console.log('No buckets found.'); return; }
+    console.log(`\n${'Bucket ID'.padEnd(30)}  Name`);
+    console.log('─'.repeat(70));
+    for (const b of buckets)
+      console.log(`${(b.id || '').padEnd(30)}  ${b.name || '(unnamed)'}`);
+    return;
+  }
+
+  // Create a task in a plan.
+  if (args.planId && typeof args.create === 'string') {
+    const payload = { planId: args.planId, title: args.create };
+    if (args.bucketId) payload.bucketId = args.bucketId;
+    if (args.due)      payload.dueDateTime = `${args.due}T00:00:00Z`;
+    if (args.assign) {
+      payload.assignments = {
+        [args.assign]: { '@odata.type': '#microsoft.graph.plannerAssignment', orderHint: ' !' },
+      };
+    }
+    const task = await graphPost('/planner/tasks', token, payload);
+    console.log(`Task created: ${task.title || args.create}`);
+    console.log(`ID: ${task.id}`);
+    return;
+  }
+
+  // Tasks in a plan. No OData params on Planner.
+  if (args.planId && args.tasks) {
+    const data  = await graphGet(`/planner/plans/${args.planId}/tasks`, token);
+    const tasks = (data.value || []).slice(0, limit);
+    if (args.json) { console.log(JSON.stringify(tasks, null, 2)); return; }
+    if (!tasks.length) { console.log('No tasks in this plan.'); return; }
+    console.log(`\n${'Task ID'.padEnd(30)}  ${'%'.padEnd(4)}  ${'Due'.padEnd(16)}  Title`);
+    console.log('─'.repeat(80));
+    for (const t of tasks) {
+      const due = t.dueDateTime ? fmtDt(t.dueDateTime) : '';
+      console.log(`${(t.id || '').padEnd(30)}  ${String(t.percentComplete ?? 0).padEnd(4)}  ${pad(due, 16)}  ${t.title || '(untitled)'}`);
+    }
+    return;
+  }
+
+  // Mark a task complete: read its etag, then PATCH percentComplete to 100.
+  if (typeof args.complete === 'string') {
+    const task = await graphGet(`/planner/tasks/${args.complete}`, token);
+    const etag = task['@odata.etag'];
+    if (!etag) { console.error('Could not read the task etag; cannot update.'); process.exit(1); }
+    await graphPatch(`/planner/tasks/${args.complete}`, token, { percentComplete: 100 }, { 'If-Match': etag });
+    console.log(`Task marked complete: ${task.title || args.complete}`);
+    return;
+  }
+
+  // Single task detail (+ description/checklist from /details).
+  if (args.taskId) {
+    const task    = await graphGet(`/planner/tasks/${args.taskId}`, token);
+    let   details = {};
+    try { details = await graphGet(`/planner/tasks/${args.taskId}/details`, token); } catch {}
+    if (args.json) { console.log(JSON.stringify({ ...task, details }, null, 2)); return; }
+    console.log(`Title      : ${task.title || '(untitled)'}`);
+    console.log(`% Complete : ${task.percentComplete ?? 0}`);
+    console.log(`Due        : ${task.dueDateTime ? fmtDt(task.dueDateTime) : 'N/A'}`);
+    console.log(`Bucket ID  : ${task.bucketId || 'N/A'}`);
+    console.log(`Plan ID    : ${task.planId || 'N/A'}`);
+    if (details.description) console.log(`\nDescription:\n${details.description}`);
+    return;
+  }
+
+  console.log('Planner: --plans | --my-tasks');
+  console.log('         --plan-id ID --tasks | --plan-id ID --buckets');
+  console.log('         --plan-id ID --create "TITLE" [--bucket-id ID] [--due YYYY-MM-DD] [--assign USER_ID]');
+  console.log('         --task-id ID | --complete TASK_ID');
+}
+
+async function cmdTodo(args) {
+  const token = await getValidToken();
+  const limit = parseInt(args.limit) || 20;
+
+  if (args.lists) {
+    const data  = await graphGet('/me/todo/lists', token, { $top: limit });
+    const lists = data.value || [];
+    if (args.json) { console.log(JSON.stringify(lists, null, 2)); return; }
+    if (!lists.length) { console.log('No task lists found.'); return; }
+    console.log(`\n${'List ID'.padEnd(50)}  Name`);
+    console.log('─'.repeat(80));
+    for (const l of lists)
+      console.log(`${(l.id || '').padEnd(50)}  ${l.displayName || '(unnamed)'}`);
+    return;
+  }
+
+  if (!args.listId) {
+    console.log('To Do: --lists');
+    console.log('       --list-id ID --tasks');
+    console.log('       --list-id ID --create "TITLE" [--body TEXT] [--due YYYY-MM-DD]');
+    console.log('       --list-id ID --complete TASK_ID');
+    return;
+  }
+
+  // Create a task in a list.
+  if (typeof args.create === 'string') {
+    const payload = { title: args.create };
+    if (args.body) payload.body = { content: args.body, contentType: 'text' };
+    if (args.due)  payload.dueDateTime = { dateTime: `${args.due}T00:00:00.000000`, timeZone: 'UTC' };
+    const task = await graphPost(`/me/todo/lists/${args.listId}/tasks`, token, payload);
+    console.log(`Task created: ${task.title || args.create}`);
+    console.log(`ID: ${task.id}`);
+    return;
+  }
+
+  // Mark a task complete (To Do needs no etag).
+  if (typeof args.complete === 'string') {
+    await graphPatch(`/me/todo/lists/${args.listId}/tasks/${args.complete}`, token, { status: 'completed' });
+    console.log(`Task marked complete: ${args.complete}`);
+    return;
+  }
+
+  // Tasks in a list.
+  if (args.tasks) {
+    const data  = await graphGet(`/me/todo/lists/${args.listId}/tasks`, token, { $top: limit });
+    const tasks = data.value || [];
+    if (args.json) { console.log(JSON.stringify(tasks, null, 2)); return; }
+    if (!tasks.length) { console.log('No tasks in this list.'); return; }
+    console.log(`\n${'Task ID'.padEnd(50)}  ${'Status'.padEnd(12)}  Title`);
+    console.log('─'.repeat(80));
+    for (const t of tasks) {
+      const due = t.dueDateTime?.dateTime ? `  (due ${fmtDtTz(t.dueDateTime)})` : '';
+      console.log(`${(t.id || '').padEnd(50)}  ${(t.status || '').padEnd(12)}  ${t.title || '(untitled)'}${due}`);
+    }
+    return;
+  }
+
+  console.log('To Do: --list-id ID --tasks | --create "TITLE" | --complete TASK_ID');
+}
+
+// ── CLI Parser ────────────────────────────────────────────────────────────────
+function parseArgs(argv) {
+  const BOOL = new Set(['json','unread','sites','chats','teamsList','contacts',
+    'manager','reports','availability','notebooks','list','vtt','help','force',
+    'plans','buckets','tasks','myTasks','lists','insights','expandReplies','members','recursive',
+    'draft','html']);
+  const args = { _: [] };
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const raw = a.slice(2);
+      const key = raw.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      if (BOOL.has(key) || i + 1 >= argv.length || argv[i + 1].startsWith('--')) {
+        args[key] = true;
+      } else {
+        args[key] = argv[++i];
+      }
+    } else {
+      args._.push(a);
+    }
+    i++;
+  }
+  return args;
+}
+
+function printHelp() {
+  const name = path.basename(process.argv[1]);
+  console.log(`Microsoft Graph API CLI
+Usage: node ${name} <command> [options]
+
+Auth:
+  login [--force]                      Authenticate via browser (PKCE flow)
+  logout                               Remove cached credentials
+  status                               Check login status
+  claims [--json]                      Decode cached JWT — identity, device claims, auth methods
+
+Data:
+  me [--json]                          Your profile
+  emails [--limit N] [--unread] [--search Q] [--folder NAME]
+         [--read ID] [--conversation CONV_ID] [--send TO --subject S --body B] [--json]
+         [--draft [--to A,B] [--cc A,B] [--bcc A,B] --subject S (--body B | --body-file F) [--html]
+                  [--attach FILE1,FILE2]]   (saves to Drafts, never sends)
+  calendar [--limit N] [--json]
+           [--create TITLE --start DT --end DT [--location L] [--timezone TZ]]
+           [--availability --start DT --end DT]
+  sharepoint [--resolve-site HOSTNAME_PATH]
+             [--sites] [--site ID [--path P]] [--download ID [--output FILE]]
+             [--site-file SITE_ID --path FILE_PATH [--output LOCAL_PATH]]
+             [--drives SITE_ID] [--drive DRIVE_ID [--path P | --item ID] [--recursive]]
+             [--drive-file DRIVE_ID (--path P | --item ID) [--output LOCAL_PATH]] [--json]
+  teams [--chats] [--messages CHAT_ID] [--send MSG --chat-id ID] [--teams-list]
+        [--lookup-user EMAIL] [--dm EMAIL --send MSG] [--json]
+  channels --team-id ID --list
+           --team-id ID --members
+           --team-id ID --channel-id ID --messages [--limit N] [--expand-replies]
+           --team-id ID --channel-id ID --replies MSG_ID [--limit N]
+           --team-id ID --channel-id ID --send MSG [--json]
+  onedrive [--path P] [--upload FILE [--dest PATH]] [--download ID [--output FILE]]
+           [--info ID] [--json]
+  people [--contacts] [--search NAME] [--limit N] [--json]
+  org [--manager] [--reports] [--json]
+  onenote [--notebooks] [--sections NOTEBOOK_ID] [--pages SECTION_ID]
+          [--read PAGE_ID] [--search QUERY] [--limit N] [--json]
+          [--create TITLE --section SECTION_ID [--body CONTENT]]
+  planner [--plans] [--my-tasks]
+          [--plan-id ID --tasks] [--plan-id ID --buckets]
+          [--plan-id ID --create "TITLE" [--bucket-id ID] [--due YYYY-MM-DD] [--assign USER_ID]]
+          [--task-id ID] [--complete TASK_ID] [--json]
+  todo [--lists] [--list-id ID --tasks]
+       [--list-id ID --create "TITLE" [--body TEXT] [--due YYYY-MM-DD]]
+       [--list-id ID --complete TASK_ID] [--json]
+  transcripts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--subject KEYWORD]
+              [--meeting ID] [--transcript ID] [--output FILE] [--vtt]
+              [--insights]   (AI meeting recap — requires Microsoft 365 Copilot)
+
+Add --json to any command for machine-readable output.
+`);
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+async function main() {
+  const argv = process.argv.slice(2);
+  if (!argv.length) { printHelp(); process.exit(0); }
+
+  const command = argv[0];
+  const args    = parseArgs(argv.slice(1));
+
+  const COMMANDS = {
+    login:       () => cmdLogin(args),
+    logout:      () => cmdLogout(),
+    status:      () => cmdStatus(),
+    me:          () => cmdMe(args),
+    emails:      () => cmdEmails(args),
+    calendar:    () => cmdCalendar(args),
+    sharepoint:  () => cmdSharepoint(args),
+    channels:    () => cmdChannels(args),
+    teams:       () => cmdTeams(args),
+    onedrive:    () => cmdOnedrive(args),
+    people:      () => cmdPeople(args),
+    org:         () => cmdOrg(args),
+    onenote:     () => cmdOnenote(args),
+    planner:     () => cmdPlanner(args),
+    todo:        () => cmdTodo(args),
+    transcripts: () => cmdTranscripts(args),
+    claims:      () => cmdClaims(args),
+    help:        () => { printHelp(); process.exit(0); },
+  };
+
+  if (!COMMANDS[command]) {
+    console.error(`Unknown command: ${command}`);
+    printHelp();
+    process.exit(1);
+  }
+
+  try {
+    await COMMANDS[command]();
+  } catch (err) {
+    if (err.statusCode === 401) {
+      console.error(`Error: Authentication expired. Run: node ${path.basename(process.argv[1])} login`);
+    } else if (err.statusCode === 403) {
+      console.error(`Error: Permission denied (${err.responseUrl || ''})`);
+      console.error('You may need additional OAuth scopes.');
+    } else if (err.statusCode === 404) {
+      console.error(`Error: Resource not found (${err.responseUrl || ''})`);
+    } else if (err.statusCode) {
+      console.error(`HTTP Error ${err.statusCode}: ${(err.responseBody || '').slice(0, 200)}`);
+    } else {
+      console.error(`Error: ${err.message}`);
+    }
+    process.exit(1);
+  }
+}
+
+main().catch(err => {
+  console.error(err.message);
+  process.exit(1);
+});
