@@ -59,7 +59,7 @@ async function resolveCopilotApiBearer(pat: string): Promise<string | null> {
   return data.token;
 }
 
-async function resolveTargetEndpoint(
+export async function resolveTargetEndpoint(
   cfg: LlmRuntimeConfig
 ): Promise<{ url: string; headers: Record<string, string>; model: string; providerLabel: string }> {
   if (cfg.provider === 'dial') {
@@ -73,7 +73,6 @@ async function resolveTargetEndpoint(
       url,
       headers: {
         'Content-Type': 'application/json',
-        'api-key': cfg.dial.apiKey,
         'Api-Key': cfg.dial.apiKey,
       },
       model,
@@ -202,6 +201,7 @@ export async function runLlmCompletion(options: {
   stream?: boolean;
   onToken?: (delta: string) => void;
   configOverride?: LlmRuntimeConfig;
+  signal?: AbortSignal;
 }): Promise<CompletionResponse & { providerLabel: string }> {
   const cfg = options.configOverride || getLlmRuntimeConfig();
   const target = await resolveTargetEndpoint(cfg);
@@ -222,6 +222,7 @@ export async function runLlmCompletion(options: {
     method: 'POST',
     headers: target.headers,
     body: JSON.stringify(body),
+    signal: options.signal,
   });
 
   if (!res.ok) {

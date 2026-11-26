@@ -50,6 +50,7 @@ export interface AgentConversation {
   id: string;
   title: string;
   playbookId?: string | null;
+  isRunning?: boolean;
   createdAt: string;
   updatedAt: string;
 }

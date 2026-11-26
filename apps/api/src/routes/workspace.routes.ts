@@ -1,4 +1,9 @@
 import type { FastifyInstance } from 'fastify';
+import { isConversationRunning } from '../agent/runManager.js';
+import { getCachedChats, listConversations, listTranscripts } from '../db/repositories.js';
+import { getAuthStatus } from '../msgraph/authManager.js';
+import { listTeamsChats } from '../msgraph/services/teamsService.js';
+import { getSyncStatus } from '../sync/indexer.js';
 import {
   completePlannerTask,
   completeTodoTask,
@@ -31,6 +36,63 @@ import {
 } from '../msgraph/services/workspaceService.js';
 
 export async function registerWorkspaceRoutes(app: FastifyInstance): Promise<void> {
+  app.get<{ Querystring: { tz?: string } }>('/api/dashboard', async (req) => {
+    const tz = req.query.tz || 'UTC';
+    const auth = await getAuthStatus();
+    const sync = getSyncStatus();
+    const recentConversations = listConversations()
+      .slice(0, 5)
+      .map((c) => ({ ...c, isRunning: isConversationRunning(c.id) }));
+
+    const recentTranscripts = listTranscripts()
+      .slice(0, 5)
+      .map((t) => ({
+        id: t.id,
+        subject: t.subject,
+        organizerName: t.organizerName,
+        startDateTime: t.startDateTime,
+        segmentCount: t.segments.length,
+        speakerStats: t.speakerStats,
+        insightsStatus: t.insightsStatus,
+        actionItemCount: t.insights.reduce((n, ins) => n + ins.actionItems.length, 0),
+      }));
+
+    let recentChats = getCachedChats().slice(0, 6);
+    let upcomingMeetings: unknown[] = [];
+    let unreadEmails: unknown[] = [];
+    let openTasks: unknown[] = [];
+
+    if (auth.state === 'LOGGED_IN') {
+      const [calRes, mailRes, plannerRes, chatsRes] = await Promise.allSettled([
+        listCalendarEvents({ limit: 12, days: 5, pastDays: 0, timezone: tz }),
+        listEmails({ limit: 6, unread: true }),
+        listMyPlannerTasks(),
+        recentChats.length === 0 ? listTeamsChats(10) : Promise.resolve(null),
+      ]);
+
+      if (calRes.status === 'fulfilled') upcomingMeetings = calRes.value;
+      if (mailRes.status === 'fulfilled') unreadEmails = mailRes.value;
+      if (plannerRes.status === 'fulfilled') {
+        openTasks = plannerRes.value.filter((t) => Number(t.percentComplete ?? 0) < 100).slice(0, 8);
+      }
+      if (chatsRes.status === 'fulfilled' && Array.isArray(chatsRes.value)) {
+        recentChats = chatsRes.value.slice(0, 6);
+      }
+    }
+
+    return {
+      authState: auth.state,
+      displayName: auth.displayName,
+      sync,
+      recentConversations,
+      recentTranscripts,
+      recentChats,
+      upcomingMeetings,
+      unreadEmails,
+      openTasks,
+    };
+  });
+
   app.get('/api/m365/me', async () => getMeProfile());
   app.get('/api/m365/org', async () => getOrgOverview());
 
@@ -61,8 +123,15 @@ export async function registerWorkspaceRoutes(app: FastifyInstance): Promise<voi
     async (req) => sendEmail(req.body)
   );
 
-  app.get<{ Querystring: { limit?: string } }>('/api/m365/calendar', async (req) =>
-    listCalendarEvents(Number(req.query.limit) || 20)
+  app.get<{ Querystring: { limit?: string; days?: string; pastDays?: string; tz?: string } }>(
+    '/api/m365/calendar',
+    async (req) =>
+      listCalendarEvents({
+        limit: Number(req.query.limit) || 50,
+        days: Number(req.query.days) || 21,
+        pastDays: req.query.pastDays !== undefined ? Number(req.query.pastDays) : 1,
+        timezone: req.query.tz,
+      })
   );
 
   app.post<{

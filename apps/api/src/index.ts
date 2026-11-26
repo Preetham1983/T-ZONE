@@ -6,6 +6,7 @@ import { AuthRequiredError } from './msgraph/authManager.js';
 import { GraphApiError } from './msgraph/graphClient.js';
 import { registerAuthRoutes } from './routes/auth.routes.js';
 import { registerChatRoutes } from './routes/chat.routes.js';
+import { registerMeetingAgentRoutes } from './routes/meetingAgent.routes.js';
 import { registerSettingsRoutes } from './routes/settings.routes.js';
 import { registerTeamsRoutes } from './routes/teams.routes.js';
 import { registerTranscriptsRoutes } from './routes/transcripts.routes.js';
@@ -34,6 +35,7 @@ export async function buildApp() {
   await registerAuthRoutes(app);
   await registerSettingsRoutes(app);
   await registerChatRoutes(app);
+  await registerMeetingAgentRoutes(app);
   await registerTeamsRoutes(app);
   await registerTranscriptsRoutes(app);
   await registerWorkspaceRoutes(app);

@@ -101,5 +101,42 @@ export function runMigrations(db: DatabaseSync): void {
       error_message TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS meeting_missions (
+      id TEXT PRIMARY KEY,
+      subject TEXT NOT NULL,
+      organizer_name TEXT NOT NULL DEFAULT '',
+      start_dt TEXT NOT NULL DEFAULT '',
+      end_dt TEXT NOT NULL DEFAULT '',
+      join_url TEXT,
+      meeting_chat_id TEXT,
+      bot_display_name TEXT NOT NULL DEFAULT 'T-ZONE Agent',
+      attendees_json TEXT NOT NULL DEFAULT '[]',
+      role_preset TEXT NOT NULL DEFAULT 'researcher',
+      role_title TEXT NOT NULL,
+      role_instructions TEXT NOT NULL,
+      focus_topics_json TEXT NOT NULL DEFAULT '[]',
+      auto_notes INTEGER NOT NULL DEFAULT 1,
+      auto_respond_chat INTEGER NOT NULL DEFAULT 0,
+      auto_extract_transcript INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      conversation_id TEXT,
+      prep_brief TEXT NOT NULL DEFAULT '',
+      live_notes TEXT NOT NULL DEFAULT '',
+      utterances_json TEXT NOT NULL DEFAULT '[]',
+      linked_transcript_id TEXT,
+      joined_at TEXT,
+      ended_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  try {
+    db.exec(
+      "ALTER TABLE meeting_missions ADD COLUMN bot_display_name TEXT NOT NULL DEFAULT 'T-ZONE Agent'"
+    );
+  } catch {
+    // Column already exists on newer schemas
+  }
 }

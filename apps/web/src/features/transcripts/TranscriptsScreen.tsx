@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { MeetingTranscriptRecord } from '@tzone/shared';
 import { Download, FileAudio, Play, Search, Sparkles, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { apiFetch, streamSsePost } from '../../api/client.js';
@@ -14,7 +14,14 @@ type ExtractStreamEvent =
 
 export function TranscriptsScreen() {
   const qc = useQueryClient();
-  const { selectedTranscriptId, setSelectedTranscriptId, launchPromptInChat } = useAppStore();
+  const {
+    selectedTranscriptId,
+    selectedTranscriptTimestamp,
+    setSelectedTranscriptId,
+    clearTranscriptTimestamp,
+    launchPromptInChat,
+  } = useAppStore();
+  const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const today = new Date().toISOString().slice(0, 10);
   const weekAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
@@ -42,6 +49,36 @@ export function TranscriptsScreen() {
     setSpeakerFilter('ALL');
     setSegmentQuery('');
   }, [active?.id]);
+
+  const highlightedSegmentIndex = (() => {
+    if (!active || !selectedTranscriptTimestamp) return null;
+    const parts = selectedTranscriptTimestamp.split(':').map(Number);
+    const targetSec =
+      parts.length === 3
+        ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+        : parts.length === 2
+          ? parts[0] * 60 + parts[1]
+          : -1;
+    if (targetSec < 0 || Number.isNaN(targetSec)) return null;
+    let best = active.segments[0];
+    let bestDiff = Infinity;
+    for (const seg of active.segments) {
+      const diff = Math.abs(seg.startSeconds - targetSec);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = seg;
+      }
+    }
+    return best ? best.index : null;
+  })();
+
+  useEffect(() => {
+    if (highlightedSegmentIndex === null) return;
+    const el = segmentRefs.current.get(highlightedSegmentIndex);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [highlightedSegmentIndex, active?.id]);
 
   const summarizeMutation = useMutation({
     mutationFn: (id: string) =>
@@ -94,9 +131,9 @@ export function TranscriptsScreen() {
   const pct = progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
 
   return (
-    <div className="grid h-full grid-cols-1 lg:grid-cols-[360px_1fr] overflow-hidden bg-white">
+    <div className="grid h-full grid-cols-1 lg:grid-cols-[330px_minmax(0,1fr)] overflow-hidden bg-white">
       {/* Left Extractor & List */}
-      <aside className="flex flex-col border-r border-slate-200 bg-slate-50 overflow-hidden">
+      <aside className="flex min-w-0 flex-col border-r border-slate-200 bg-slate-50 overflow-hidden">
         <div className="border-b border-slate-200 bg-white p-4 space-y-3">
           <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
             <FileAudio className="h-4 w-4 text-blue-600" />
@@ -197,7 +234,7 @@ export function TranscriptsScreen() {
       </aside>
 
       {/* Right Detail Pane */}
-      <section className="flex flex-col overflow-hidden">
+      <section className="flex min-w-0 flex-col overflow-hidden">
         {!active ? (
           <div className="grid flex-1 place-items-center p-8 text-center text-sm text-slate-500">
             Select or extract a meeting transcript to inspect speaker timeline, Copilot AI insights, and run operations.
@@ -205,17 +242,17 @@ export function TranscriptsScreen() {
         ) : (
           <>
             <header className="border-b border-slate-200 px-5 py-3 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">{active.subject}</h2>
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-slate-900 truncate">{active.subject}</h2>
                 <div className="text-xs font-mono text-slate-500">
                   Organizer: {active.organizerName} · {active.segments.length} segments · Indexed in FTS5
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 shrink-0">
                 <button
                   onClick={() =>
                     launchPromptInChat(
-                      `Analyze the transcript "${active.subject}" (record ID: ${active.id}). Summarize key decisions with timestamps and list all action items.`
+                      `Analyze the full transcript of "${active.subject}" from ${active.startDateTime.slice(0, 10)}. Summarize key decisions with timestamps and list all action items.`
                     )
                   }
                   className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
@@ -225,7 +262,7 @@ export function TranscriptsScreen() {
                 <button
                   onClick={() =>
                     launchPromptInChat(
-                      `Read transcript "${active.subject}" (${active.id}), extract every action item and owner, and propose Planner tasks or Microsoft To Do items for me.`
+                      `Read the full transcript of "${active.subject}" from ${active.startDateTime.slice(0, 10)}, extract every action item and owner, and propose Planner or Microsoft To Do tasks for me.`
                     )
                   }
                   className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
@@ -235,7 +272,7 @@ export function TranscriptsScreen() {
                 <button
                   onClick={() =>
                     launchPromptInChat(
-                      `Based on transcript "${active.subject}" (${active.id}), create an Outlook email draft summarizing the meeting recap and next steps.`
+                      `Based on the transcript of "${active.subject}" from ${active.startDateTime.slice(0, 10)}, create an Outlook email draft summarizing the meeting recap and next steps.`
                     )
                   }
                   className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
@@ -257,9 +294,9 @@ export function TranscriptsScreen() {
               </div>
             </header>
 
-            <div className="grid flex-1 grid-cols-1 xl:grid-cols-[1fr_330px] overflow-hidden">
+            <div className="grid flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] overflow-hidden">
               {/* VTT Reader */}
-              <div className="flex flex-col overflow-hidden p-4 space-y-3">
+              <div className="flex min-w-0 flex-col overflow-hidden p-4 space-y-3">
                 <div className="flex flex-wrap gap-2">
                   <div className="relative flex-1 min-w-48">
                     <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
@@ -285,16 +322,30 @@ export function TranscriptsScreen() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto rounded-xl border border-slate-200 divide-y divide-slate-100">
-                  {filteredSegments.map((seg) => (
-                    <div
-                      key={seg.index}
-                      className="grid grid-cols-[76px_135px_1fr] gap-3 px-3.5 py-2.5 text-xs hover:bg-slate-50"
-                    >
-                      <span className="font-mono text-slate-400">{seg.startTime}</span>
-                      <strong className="truncate text-slate-800">{seg.speaker}</strong>
-                      <span className="text-slate-700 leading-relaxed">{seg.text}</span>
-                    </div>
-                  ))}
+                  {filteredSegments.map((seg) => {
+                    const isHighlighted = highlightedSegmentIndex === seg.index;
+                    return (
+                      <div
+                        key={seg.index}
+                        ref={(el) => {
+                          if (el) segmentRefs.current.set(seg.index, el);
+                          else segmentRefs.current.delete(seg.index);
+                        }}
+                        onClick={() => isHighlighted && clearTranscriptTimestamp()}
+                        className={`flex flex-col sm:grid sm:grid-cols-[72px_135px_minmax(0,1fr)] gap-1 sm:gap-3 px-3.5 py-2.5 text-xs transition ${
+                          isHighlighted
+                            ? 'bg-blue-50 ring-2 ring-inset ring-blue-400'
+                            : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className={`font-mono ${isHighlighted ? 'font-bold text-blue-700' : 'text-slate-400'}`}>
+                          {seg.startTime}
+                        </span>
+                        <strong className="truncate text-slate-800">{seg.speaker}</strong>
+                        <span className="text-slate-700 leading-relaxed [overflow-wrap:anywhere]">{seg.text}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

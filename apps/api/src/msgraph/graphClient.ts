@@ -102,10 +102,11 @@ async function rawGraphRequest(
 export async function graphGet<T = Record<string, unknown>>(
   endpoint: string,
   params?: Record<string, string | number | undefined>,
-  beta = false
+  beta = false,
+  extraHeaders?: Record<string, string>
 ): Promise<T> {
   const url = buildGraphUrl(endpoint, params, beta);
-  const res = await rawGraphRequest(url);
+  const res = await rawGraphRequest(url, extraHeaders ? { headers: extraHeaders } : {});
   return (await res.json()) as T;
 }
 

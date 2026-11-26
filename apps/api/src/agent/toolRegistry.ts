@@ -281,12 +281,23 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
       if (args.mode === 'extract_range') {
         const today = new Date().toISOString().slice(0, 10);
         const weekAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString().slice(0, 10);
-        const res = await extractAllTranscripts({
-          startDate: String(args.startDate || weekAgo),
-          endDate: String(args.endDate || today),
+        const startDate = String(args.startDate || weekAgo);
+        const endDate = String(args.endDate || today);
+        let res = await extractAllTranscripts({
+          startDate,
+          endDate,
           subjectFilter: args.subjectFilter ? String(args.subjectFilter) : undefined,
           includeInsights: true,
         });
+        // If a multi-word or mismatched subjectFilter yielded 0 transcripts, retry without subjectFilter
+        // so the agent sees all available meetings in range (e.g. "ontology blocker call" -> "Ontology Workshop").
+        if (res.transcriptsExtracted.length === 0 && args.subjectFilter) {
+          res = await extractAllTranscripts({
+            startDate,
+            endDate,
+            includeInsights: true,
+          });
+        }
         for (const t of res.transcriptsExtracted.slice(0, 6)) {
           ctx.citations.push({
             kind: 'transcript',
@@ -331,29 +342,58 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
   {
     definition: def(
       'read_transcript_detail',
-      'Read full speaker-attributed transcript segments and Copilot AI insights for a transcript ID.',
+      'Read speaker-attributed transcript turns and Copilot AI insights by transcriptRecordId OR meeting subject.',
       {
-        transcriptRecordId: { type: 'string', description: 'Record id (meetingId:transcriptId)' },
-        keywordFilter: { type: 'string', description: 'Optional keyword to filter segments' },
-        maxSegments: { type: 'number', description: 'Max segments to return (default 120)' },
-      },
-      ['transcriptRecordId']
+        transcriptRecordId: { type: 'string', description: 'Record id (meetingId:transcriptId), optional if subject is given' },
+        subject: { type: 'string', description: 'Optional meeting subject keyword if record id is unknown' },
+        keywordFilter: { type: 'string', description: 'Optional keyword to filter turns' },
+        offset: { type: 'number', description: 'Starting turn index for pagination (default 0)' },
+        maxTurns: { type: 'number', description: 'Max merged speaker turns to return (default 220)' },
+      }
     ),
     skillCommand: 'msgraph transcripts --meeting --transcript --vtt',
     execute: async (args, ctx) => {
-      const rec = getTranscriptById(String(args.transcriptRecordId));
-      if (!rec) throw new Error(`Transcript ${args.transcriptRecordId} not found in vault.`);
+      let rec = args.transcriptRecordId ? getTranscriptById(String(args.transcriptRecordId)) : null;
+      if (!rec && args.subject) {
+        const kwSub = String(args.subject).toLowerCase();
+        rec = listTranscripts().find((t) => t.subject.toLowerCase().includes(kwSub)) || null;
+      }
+      if (!rec) {
+        throw new Error(`Transcript not found (${String(args.transcriptRecordId || args.subject || 'missing id')}).`);
+      }
+
+      // Merge consecutive segments by the same speaker so long VTT transcripts fit cleanly in context
+      const mergedTurns: Array<{ index: number; startTime: string; endTime: string; speaker: string; text: string }> = [];
+      for (const seg of rec.segments) {
+        const last = mergedTurns[mergedTurns.length - 1];
+        if (last && last.speaker === seg.speaker && last.text.length < 900) {
+          last.endTime = seg.endTime;
+          last.text = `${last.text} ${seg.text}`;
+        } else {
+          mergedTurns.push({
+            index: mergedTurns.length,
+            startTime: seg.startTime,
+            endTime: seg.endTime,
+            speaker: seg.speaker,
+            text: seg.text,
+          });
+        }
+      }
+
       const kw = args.keywordFilter ? String(args.keywordFilter).toLowerCase() : '';
-      const segs = rec.segments
-        .filter((s) => (!kw ? true : s.text.toLowerCase().includes(kw) || s.speaker.toLowerCase().includes(kw)))
-        .slice(0, Number(args.maxSegments || 120));
+      const filtered = mergedTurns.filter((s) =>
+        !kw ? true : s.text.toLowerCase().includes(kw) || s.speaker.toLowerCase().includes(kw)
+      );
+      const offset = Math.max(0, Number(args.offset || 0));
+      const maxTurns = Math.min(300, Math.max(10, Number(args.maxTurns || 220)));
+      const page = filtered.slice(offset, offset + maxTurns);
 
       ctx.citations.push({
         kind: 'transcript',
         id: rec.id,
         title: rec.subject,
         subtitle: `${rec.startDateTime.slice(0, 10)} · ${rec.speakerStats.map((s) => s.speaker).slice(0, 3).join(', ')}`,
-        snippet: segs[0]?.text || rec.plainText.slice(0, 160),
+        snippet: page[0]?.text || rec.plainText.slice(0, 160),
         timestamp: rec.startDateTime,
       });
 
@@ -364,7 +404,12 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
         speakerStats: rec.speakerStats,
         insightsStatus: rec.insightsStatus,
         insights: rec.insights,
-        segments: segs,
+        totalRawSegments: rec.segments.length,
+        totalTurns: filtered.length,
+        offset,
+        hasMore: offset + page.length < filtered.length,
+        nextOffset: offset + page.length < filtered.length ? offset + page.length : null,
+        turns: page,
       };
     },
   },

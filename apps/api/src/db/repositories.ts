@@ -4,7 +4,13 @@ import type {
   AgentConversation,
   AgentMessage,
   CitationItem,
+  CreateMeetingMissionInput,
   FtsSearchResult,
+  MeetingAgentMission,
+  MeetingAgentRolePreset,
+  MeetingAgentStatus,
+  MeetingAttendeeInfo,
+  MeetingTranscriptChunk,
   MeetingTranscriptRecord,
   PendingAction,
   PendingActionStatus,
@@ -12,6 +18,7 @@ import type {
   TeamSummary,
   ChannelSummary,
   ToolTraceItem,
+  UpdateMeetingMissionInput,
 } from '@tzone/shared';
 import { getDb } from './client.js';
 
@@ -503,4 +510,185 @@ export function getIndexCounts(db: DatabaseSync = getDb()) {
   ).c;
 
   return { chats, transcripts, segments, channelMessages };
+}
+
+function mapMissionRow(r: Record<string, unknown>): MeetingAgentMission {
+  return {
+    id: String(r.id),
+    subject: String(r.subject),
+    organizerName: String(r.organizer_name || ''),
+    startDateTime: String(r.start_dt || ''),
+    endDateTime: String(r.end_dt || ''),
+    joinUrl: r.join_url ? String(r.join_url) : undefined,
+    meetingChatId: r.meeting_chat_id ? String(r.meeting_chat_id) : undefined,
+    botDisplayName: String(r.bot_display_name || 'T-ZONE Agent'),
+    attendees: JSON.parse(String(r.attendees_json || '[]')) as MeetingAttendeeInfo[],
+    rolePreset: String(r.role_preset || 'researcher') as MeetingAgentRolePreset,
+    roleTitle: String(r.role_title),
+    roleInstructions: String(r.role_instructions),
+    focusTopics: JSON.parse(String(r.focus_topics_json || '[]')) as string[],
+    autoNotes: Boolean(r.auto_notes),
+    autoRespondChat: Boolean(r.auto_respond_chat),
+    autoExtractTranscript: Boolean(r.auto_extract_transcript),
+    status: String(r.status || 'scheduled') as MeetingAgentStatus,
+    conversationId: r.conversation_id ? String(r.conversation_id) : null,
+    prepBrief: String(r.prep_brief || ''),
+    liveNotes: String(r.live_notes || ''),
+    utterances: JSON.parse(String(r.utterances_json || '[]')) as MeetingTranscriptChunk[],
+    linkedTranscriptId: r.linked_transcript_id ? String(r.linked_transcript_id) : null,
+    joinedAt: r.joined_at ? String(r.joined_at) : null,
+    endedAt: r.ended_at ? String(r.ended_at) : null,
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  };
+}
+
+export function listMeetingMissions(db: DatabaseSync = getDb()): MeetingAgentMission[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM meeting_missions
+       ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,
+                updated_at DESC`
+    )
+    .all() as Array<Record<string, unknown>>;
+  return rows.map(mapMissionRow);
+}
+
+export function getMeetingMission(id: string, db: DatabaseSync = getDb()): MeetingAgentMission | null {
+  const row = db.prepare('SELECT * FROM meeting_missions WHERE id = ?').get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapMissionRow(row) : null;
+}
+
+export function createMeetingMission(
+  input: CreateMeetingMissionInput,
+  db: DatabaseSync = getDb()
+): MeetingAgentMission {
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO meeting_missions (
+       id, subject, organizer_name, start_dt, end_dt, join_url, meeting_chat_id, bot_display_name,
+       attendees_json, role_preset, role_title, role_instructions, focus_topics_json,
+       auto_notes, auto_respond_chat, auto_extract_transcript, status,
+       conversation_id, prep_brief, live_notes, utterances_json,
+       linked_transcript_id, joined_at, ended_at, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', NULL, '', '', '[]', NULL, NULL, NULL, ?, ?)`
+  ).run(
+    id,
+    input.subject.trim(),
+    input.organizerName || '',
+    input.startDateTime || '',
+    input.endDateTime || '',
+    input.joinUrl || null,
+    input.meetingChatId || null,
+    (input.botDisplayName || 'T-ZONE Agent').trim(),
+    JSON.stringify(input.attendees || []),
+    input.rolePreset || 'researcher',
+    input.roleTitle.trim(),
+    input.roleInstructions.trim(),
+    JSON.stringify((input.focusTopics || []).map((t) => t.trim()).filter(Boolean)),
+    input.autoNotes === false ? 0 : 1,
+    input.autoRespondChat ? 1 : 0,
+    input.autoExtractTranscript === false ? 0 : 1,
+    now,
+    now
+  );
+  return getMeetingMission(id, db)!;
+}
+
+export function updateMeetingMission(
+  id: string,
+  patch: UpdateMeetingMissionInput & {
+    conversationId?: string | null;
+    joinedAt?: string | null;
+    endedAt?: string | null;
+    utterances?: MeetingTranscriptChunk[];
+    linkedTranscriptId?: string | null;
+  },
+  db: DatabaseSync = getDb()
+): MeetingAgentMission | null {
+  const existing = getMeetingMission(id, db);
+  if (!existing) return null;
+
+  const merged: MeetingAgentMission = {
+    ...existing,
+    subject: patch.subject ?? existing.subject,
+    organizerName: patch.organizerName ?? existing.organizerName,
+    startDateTime: patch.startDateTime ?? existing.startDateTime,
+    endDateTime: patch.endDateTime ?? existing.endDateTime,
+    joinUrl: patch.joinUrl !== undefined ? patch.joinUrl : existing.joinUrl,
+    meetingChatId: patch.meetingChatId !== undefined ? patch.meetingChatId : existing.meetingChatId,
+    botDisplayName: patch.botDisplayName?.trim() || existing.botDisplayName,
+    attendees: patch.attendees ?? existing.attendees,
+    rolePreset: patch.rolePreset ?? existing.rolePreset,
+    roleTitle: patch.roleTitle ?? existing.roleTitle,
+    roleInstructions: patch.roleInstructions ?? existing.roleInstructions,
+    focusTopics: patch.focusTopics ?? existing.focusTopics,
+    autoNotes: patch.autoNotes !== undefined ? patch.autoNotes : existing.autoNotes,
+    autoRespondChat:
+      patch.autoRespondChat !== undefined ? patch.autoRespondChat : existing.autoRespondChat,
+    autoExtractTranscript:
+      patch.autoExtractTranscript !== undefined
+        ? patch.autoExtractTranscript
+        : existing.autoExtractTranscript,
+    status: patch.status ?? existing.status,
+    conversationId:
+      patch.conversationId !== undefined ? patch.conversationId : existing.conversationId,
+    prepBrief: patch.prepBrief !== undefined ? patch.prepBrief : existing.prepBrief,
+    liveNotes: patch.liveNotes !== undefined ? patch.liveNotes : existing.liveNotes,
+    utterances: patch.utterances ?? existing.utterances,
+    linkedTranscriptId:
+      patch.linkedTranscriptId !== undefined
+        ? patch.linkedTranscriptId
+        : existing.linkedTranscriptId,
+    joinedAt: patch.joinedAt !== undefined ? patch.joinedAt : existing.joinedAt,
+    endedAt: patch.endedAt !== undefined ? patch.endedAt : existing.endedAt,
+    updatedAt: new Date().toISOString(),
+  };
+
+  db.prepare(
+    `UPDATE meeting_missions SET
+       subject = ?, organizer_name = ?, start_dt = ?, end_dt = ?,
+       join_url = ?, meeting_chat_id = ?, bot_display_name = ?, attendees_json = ?,
+       role_preset = ?, role_title = ?, role_instructions = ?, focus_topics_json = ?,
+       auto_notes = ?, auto_respond_chat = ?, auto_extract_transcript = ?,
+       status = ?, conversation_id = ?, prep_brief = ?, live_notes = ?,
+       utterances_json = ?, linked_transcript_id = ?, joined_at = ?, ended_at = ?,
+       updated_at = ?
+     WHERE id = ?`
+  ).run(
+    merged.subject,
+    merged.organizerName,
+    merged.startDateTime,
+    merged.endDateTime,
+    merged.joinUrl || null,
+    merged.meetingChatId || null,
+    merged.botDisplayName,
+    JSON.stringify(merged.attendees),
+    merged.rolePreset,
+    merged.roleTitle,
+    merged.roleInstructions,
+    JSON.stringify(merged.focusTopics),
+    merged.autoNotes ? 1 : 0,
+    merged.autoRespondChat ? 1 : 0,
+    merged.autoExtractTranscript ? 1 : 0,
+    merged.status,
+    merged.conversationId || null,
+    merged.prepBrief,
+    merged.liveNotes,
+    JSON.stringify(merged.utterances),
+    merged.linkedTranscriptId || null,
+    merged.joinedAt || null,
+    merged.endedAt || null,
+    merged.updatedAt,
+    id
+  );
+
+  return getMeetingMission(id, db);
+}
+
+export function deleteMeetingMission(id: string, db: DatabaseSync = getDb()): void {
+  db.prepare('DELETE FROM meeting_missions WHERE id = ?').run(id);
 }

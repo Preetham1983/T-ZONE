@@ -2,6 +2,7 @@ import { chatRequestSchema, confirmActionSchema } from '@tzone/shared';
 import type { FastifyInstance } from 'fastify';
 import { runAgentTurn } from '../agent/orchestrator.js';
 import { PLAYBOOKS } from '../agent/playbooks.js';
+import { isConversationRunning, stopConversationRun } from '../agent/runManager.js';
 import { resolvePendingAction } from '../agent/toolRegistry.js';
 import {
   deleteConversation,
@@ -12,14 +13,26 @@ import {
 export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/playbooks', async () => PLAYBOOKS);
 
-  app.get('/api/conversations', async () => listConversations());
+  app.get('/api/conversations', async () =>
+    listConversations().map((c) => ({
+      ...c,
+      isRunning: isConversationRunning(c.id),
+    }))
+  );
 
   app.get<{ Params: { id: string } }>('/api/conversations/:id', async (req) => ({
     id: req.params.id,
+    isRunning: isConversationRunning(req.params.id),
     messages: getConversationMessages(req.params.id),
   }));
 
+  app.post<{ Params: { id: string } }>('/api/conversations/:id/stop', async (req) => {
+    const stopped = stopConversationRun(req.params.id);
+    return { ok: true, stopped };
+  });
+
   app.delete<{ Params: { id: string } }>('/api/conversations/:id', async (req) => {
+    stopConversationRun(req.params.id);
     deleteConversation(req.params.id);
     return { ok: true };
   });

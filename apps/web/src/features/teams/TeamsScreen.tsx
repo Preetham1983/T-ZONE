@@ -6,7 +6,7 @@ import type {
   TeamsMessageItem,
 } from '@tzone/shared';
 import { Hash, MessageSquare, RefreshCw, Send, Sparkles, UserPlus, Users } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { apiFetch } from '../../api/client.js';
 import { useAppStore } from '../../stores/appStore.js';
 
@@ -16,7 +16,7 @@ type SelectedTarget =
 
 export function TeamsScreen() {
   const qc = useQueryClient();
-  const { launchPromptInChat } = useAppStore();
+  const { launchPromptInChat, selectedChatId, clearSelectedChatId } = useAppStore();
 
   const [filterText, setFilterText] = useState('');
   const [chatTypeFilter, setChatTypeFilter] = useState<'all' | 'oneOnOne' | 'meeting'>('all');
@@ -26,11 +26,44 @@ export function TeamsScreen() {
   const [dmEmail, setDmEmail] = useState('');
   const [dmText, setDmText] = useState('');
   const [dmFeedback, setDmFeedback] = useState<string | null>(null);
+  const [channelInspect, setChannelInspect] = useState<'none' | 'files' | 'members'>('none');
+
+  const { data: channelFiles } = useQuery({
+    queryKey: ['channel-files', selected?.kind === 'channel' ? selected.channel.id : ''],
+    queryFn: () =>
+      selected?.kind === 'channel'
+        ? apiFetch<{ items: Array<Record<string, any>> }>(
+            `/api/teams/${encodeURIComponent(selected.team.id)}/channels/${encodeURIComponent(selected.channel.id)}/files`
+          )
+        : Promise.resolve({ items: [] }),
+    enabled: selected?.kind === 'channel' && channelInspect === 'files',
+  });
+
+  const { data: teamMembers = [] } = useQuery({
+    queryKey: ['team-members', selected?.kind === 'channel' ? selected.team.id : ''],
+    queryFn: () =>
+      selected?.kind === 'channel'
+        ? apiFetch<Array<{ id: string; displayName?: string; userPrincipalName?: string }>>(
+            `/api/teams/${encodeURIComponent(selected.team.id)}/members`
+          )
+        : Promise.resolve([]),
+    enabled: selected?.kind === 'channel' && channelInspect === 'members',
+  });
 
   const { data: chatsRes, refetch: refetchChats, isFetching: loadingChats } = useQuery({
     queryKey: ['teams-chats'],
     queryFn: () => apiFetch<{ source: string; chats: TeamsChatSummary[] }>('/api/teams/chats?refresh=true'),
   });
+
+  useEffect(() => {
+    if (!selectedChatId || !chatsRes?.chats) return;
+    const target = chatsRes.chats.find((c) => c.id === selectedChatId);
+    if (target) {
+      setSelected({ kind: 'chat', chat: target });
+      setReplyToId(null);
+      clearSelectedChatId();
+    }
+  }, [selectedChatId, chatsRes?.chats, clearSelectedChatId]);
 
   const { data: teamsRes, refetch: refetchTeams, isFetching: loadingTeams } = useQuery({
     queryKey: ['teams-list'],
@@ -120,9 +153,9 @@ export function TeamsScreen() {
   });
 
   return (
-    <div className="grid h-full grid-cols-1 lg:grid-cols-[280px_1fr_290px] overflow-hidden bg-white">
+    <div className="grid h-full grid-cols-1 lg:grid-cols-[270px_minmax(0,1fr)_280px] overflow-hidden bg-white">
       {/* Left Chats + Teams Tree */}
-      <aside className="flex flex-col border-r border-slate-200 bg-slate-50 overflow-hidden">
+      <aside className="flex min-w-0 flex-col border-r border-slate-200 bg-slate-50 overflow-hidden">
         <div className="border-b border-slate-200 bg-white p-3 space-y-2">
           <div className="flex items-center justify-between">
             <strong className="text-xs text-slate-900">Chats &amp; Channels</strong>
@@ -233,16 +266,16 @@ export function TeamsScreen() {
       </aside>
 
       {/* Center Message Stream */}
-      <section className="flex flex-col overflow-hidden">
+      <section className="flex min-w-0 flex-col overflow-hidden">
         {!selected ? (
           <div className="grid flex-1 place-items-center p-8 text-center text-sm text-slate-500">
             Select a 1:1 chat, meeting chat, or Teams channel on the left to read threads, replies, or post messages.
           </div>
         ) : (
           <>
-            <header className="border-b border-slate-200 px-5 py-3 flex items-center justify-between gap-2">
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">
+            <header className="border-b border-slate-200 px-5 py-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-slate-900 truncate">
                   {selected.kind === 'chat'
                     ? selected.chat.displayTitle
                     : `${selected.team.displayName} > #${selected.channel.displayName}`}
@@ -253,7 +286,31 @@ export function TeamsScreen() {
                     : 'Channel messages with expanded replies'}
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 shrink-0">
+                {selected.kind === 'channel' && (
+                  <>
+                    <button
+                      onClick={() => setChannelInspect(channelInspect === 'files' ? 'none' : 'files')}
+                      className={`rounded-lg border px-2.5 py-1 text-xs ${
+                        channelInspect === 'files'
+                          ? 'border-blue-300 bg-blue-50 text-blue-700 font-medium'
+                          : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      Files
+                    </button>
+                    <button
+                      onClick={() => setChannelInspect(channelInspect === 'members' ? 'none' : 'members')}
+                      className={`rounded-lg border px-2.5 py-1 text-xs ${
+                        channelInspect === 'members'
+                          ? 'border-blue-300 bg-blue-50 text-blue-700 font-medium'
+                          : 'border-slate-300 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      Members
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() => refetchMessages()}
                   className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50"
@@ -264,11 +321,11 @@ export function TeamsScreen() {
                   onClick={() => {
                     if (selected.kind === 'chat') {
                       launchPromptInChat(
-                        `Read messages from Teams chat "${selected.chat.displayTitle}" (chatId: ${selected.chat.id}) and summarize key updates and open questions.`
+                        `Read recent messages from my Teams chat with "${selected.chat.displayTitle}" and summarize key updates and open questions.`
                       );
                     } else {
                       launchPromptInChat(
-                        `Read channel "${selected.team.displayName} > #${selected.channel.displayName}" (teamId: ${selected.team.id}, channelId: ${selected.channel.id}) including replies, and summarize unanswered questions and decisions.`
+                        `Read recent posts and replies from Teams channel "${selected.team.displayName} > #${selected.channel.displayName}" and summarize unanswered questions and decisions.`
                       );
                     }
                   }}
@@ -279,10 +336,45 @@ export function TeamsScreen() {
               </div>
             </header>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {selected.kind === 'channel' && channelInspect !== 'none' && (
+              <div className="border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-xs max-h-40 overflow-y-auto">
+                {channelInspect === 'files' ? (
+                  <div className="space-y-1">
+                    <div className="font-semibold text-slate-800">Channel Files</div>
+                    {(channelFiles?.items || []).length === 0 ? (
+                      <div className="text-slate-500">No files in channel folder.</div>
+                    ) : (
+                      (channelFiles?.items || []).map((f: any) => (
+                        <div key={f.id} className="flex justify-between gap-2">
+                          <span className="truncate">{f.folder ? '📁' : '📄'} {f.name}</span>
+                          {f.webUrl && (
+                            <a href={f.webUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline shrink-0">
+                              Open
+                            </a>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="font-semibold text-slate-800">Team Members ({teamMembers.length})</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {teamMembers.map((m) => (
+                        <span key={m.id} className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px]">
+                          {m.displayName}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex-1 min-w-0 overflow-y-auto p-4 space-y-3">
               {loadingMsgs && <div className="text-xs text-blue-600">Loading messages...</div>}
               {messages.map((m) => (
-                <div key={m.id} className="rounded-xl border border-slate-200 bg-white p-3 text-xs space-y-2">
+                <div key={m.id} className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 text-xs space-y-2 [overflow-wrap:anywhere]">
                   <div className="flex items-center justify-between">
                     <strong className="text-slate-900">{m.senderName}</strong>
                     <div className="flex items-center gap-2">

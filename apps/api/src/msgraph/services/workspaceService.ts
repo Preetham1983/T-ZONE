@@ -98,16 +98,40 @@ export async function sendEmail(args: { to: string[]; subject: string; body: str
   });
 }
 
-export async function listCalendarEvents(limit = 20) {
+export async function listCalendarEvents(options: {
+  limit?: number;
+  days?: number;
+  pastDays?: number;
+  timezone?: string;
+} | number = {}) {
+  const opts = typeof options === 'number' ? { limit: options } : options;
+  const limit = opts.limit || 50;
+  const days = opts.days || 21;
+  const pastDays = opts.pastDays ?? 1;
+
   const now = new Date();
-  const future = new Date(now.getTime() + 45 * 86400 * 1000);
-  const data = await graphGet<{ value?: unknown[] }>('/me/calendarView', {
-    startDateTime: `${now.toISOString().slice(0, 19)}Z`,
-    endDateTime: `${future.toISOString().slice(0, 19)}Z`,
-    $top: limit,
-    $select: 'id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting',
-    $orderby: 'start/dateTime',
-  });
+  const start = new Date(now.getTime() - pastDays * 86400 * 1000);
+  start.setUTCHours(0, 0, 0, 0);
+  const future = new Date(now.getTime() + days * 86400 * 1000);
+
+  const headers: Record<string, string> = {};
+  if (opts.timezone) {
+    headers.Prefer = `outlook.timezone="${opts.timezone}"`;
+  }
+
+  const data = await graphGet<{ value?: unknown[] }>(
+    '/me/calendarView',
+    {
+      startDateTime: `${start.toISOString().slice(0, 19)}Z`,
+      endDateTime: `${future.toISOString().slice(0, 19)}Z`,
+      $top: limit,
+      $select:
+        'id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting,onlineMeetingUrl,isCancelled,showAs,responseStatus,bodyPreview,webLink,attendees',
+      $orderby: 'start/dateTime',
+    },
+    false,
+    Object.keys(headers).length ? headers : undefined
+  );
   return data.value || [];
 }
 
