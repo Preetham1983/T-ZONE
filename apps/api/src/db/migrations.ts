@@ -130,6 +130,35 @@ export function runMigrations(db: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS tzone_boards (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      color TEXT NOT NULL DEFAULT '#2563eb',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tzone_tasks (
+      id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'todo',
+      priority TEXT NOT NULL DEFAULT 'medium',
+      due_date TEXT,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      assignee TEXT NOT NULL DEFAULT '',
+      checklist_json TEXT NOT NULL DEFAULT '[]',
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      source_id TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (board_id) REFERENCES tzone_boards(id) ON DELETE CASCADE
+    );
   `);
 
   try {

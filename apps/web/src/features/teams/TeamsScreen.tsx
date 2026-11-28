@@ -459,7 +459,7 @@ export function TeamsScreen() {
           <input
             value={dmEmail}
             onChange={(e) => setDmEmail(e.target.value)}
-            placeholder="colleague@company.com"
+            placeholder="Name or colleague@company.com"
             className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
           />
           <textarea

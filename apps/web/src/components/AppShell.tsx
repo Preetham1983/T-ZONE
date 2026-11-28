@@ -3,10 +3,12 @@ import type {
   AuthStatusResponse,
   LlmSettingsPublic,
   MeetingAgentMission,
+  PlannerStats,
   SyncStatusResponse,
 } from '@tzone/shared';
 import {
   Bot,
+  CheckSquare,
   FileAudio,
   Headphones,
   KeyRound,
@@ -74,6 +76,14 @@ export function AppShell({ children }: AppShellProps) {
 
   const activeMissionCount = missions.filter((m) => m.status === 'active').length;
 
+  const { data: plannerStats } = useQuery({
+    queryKey: ['tzone-planner-stats'],
+    queryFn: () => apiFetch<PlannerStats>('/api/planner/stats'),
+    refetchInterval: 15_000,
+  });
+  const openPlannerCount =
+    (plannerStats?.todo ?? 0) + (plannerStats?.inProgress ?? 0) + (plannerStats?.review ?? 0);
+
   const navItems: Array<{ id: AppScreen; label: string; icon: ReactNode; badge?: string | number }> = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4 shrink-0" /> },
     {
@@ -81,6 +91,12 @@ export function AppShell({ children }: AppShellProps) {
       label: 'Agent Chat',
       icon: <Bot className="h-4 w-4 shrink-0" />,
       badge: activeRunCount > 0 ? `${activeRunCount} live` : 'AI',
+    },
+    {
+      id: 'planner',
+      label: 'Planner & To Do',
+      icon: <CheckSquare className="h-4 w-4 shrink-0" />,
+      badge: openPlannerCount,
     },
     {
       id: 'meetings',

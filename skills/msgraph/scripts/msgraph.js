@@ -42,7 +42,7 @@ const SCOPES     = [
   'Files.Read', 'Files.ReadWrite',
   'Sites.Read.All', 'Sites.ReadWrite.All', 'Chat.Read', 'Chat.ReadWrite',
   'ChannelMessage.Read.All', 'ChannelMessage.Send',
-  'OnlineMeetingTranscript.Read.All', 'OnlineMeetings.Read',
+  'OnlineMeetingTranscript.Read.All', 'OnlineMeetings.Read', 'OnlineMeetings.ReadWrite',
   'People.Read', 'Contacts.Read', 'offline_access',
   'Notes.Read', 'Notes.ReadWrite', 'OnlineMeetingAiInsight.Read.All', 'Tasks.ReadWrite',
   'Group.Read.All',
@@ -154,6 +154,17 @@ async function graphPatch(endpoint, token, body, extraHeaders = {}) {
   }, bodyStr);
   // Planner PATCH returns 204 with an empty body unless Prefer: return=representation is sent.
   return res.body ? JSON.parse(res.body) : {};
+}
+
+async function graphDelete(endpoint, token, extraHeaders = {}) {
+  await httpsRequest(`${GRAPH_BASE}${endpoint}`, {
+    method:  'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...extraHeaders,
+    },
+  });
+  return { ok: true };
 }
 
 function graphDownload(endpoint, token) {
@@ -902,6 +913,39 @@ async function listMemberTeams(token) {
   return teams;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function resolveUser(query, token) {
+  const q = String(query || '').trim();
+  if (!q) throw new Error('User email, name, or ID is required');
+  if (q.includes('@') || UUID_RE.test(q)) {
+    try {
+      const user = await graphGet(`/users/${encodeURIComponent(q)}`, token, {
+        $select: 'id,displayName,userPrincipalName,jobTitle,department',
+      });
+      if (user?.id) return user;
+    } catch {
+      // Fall back to /me/people when User.ReadBasic.All is not consented
+    }
+  }
+
+  const qLower = q.toLowerCase();
+  const peopleData = await graphGet('/me/people', token, { $search: `"${q.replace(/"/g, '')}"`, $top: 15 });
+  for (const p of (peopleData.value || [])) {
+    const emails = [p.userPrincipalName, ...(p.scoredEmailAddresses || []).map(e => e.address)].filter(Boolean);
+    if (p.id && UUID_RE.test(p.id) && (emails.some(e => e.toLowerCase().includes(qLower)) || (p.displayName || '').toLowerCase().includes(qLower))) {
+      return {
+        id: p.id,
+        displayName: p.displayName || emails[0] || q,
+        userPrincipalName: emails[0] || q,
+        jobTitle: p.jobTitle,
+        department: p.department,
+      };
+    }
+  }
+  throw new Error(`Could not resolve user "${q}". Run login to refresh permissions if needed.`);
+}
+
 async function cmdTeams(args) {
   const token = await getValidToken();
   const limit = parseInt(args.limit) || 20;
@@ -923,9 +967,7 @@ async function cmdTeams(args) {
   }
 
   if (args.lookupUser) {
-    const user = await graphGet(`/users/${args.lookupUser}`, token, {
-      $select: 'id,displayName,userPrincipalName,jobTitle,department',
-    });
+    const user = await resolveUser(args.lookupUser, token);
     const me = await graphGet('/me', token, { $select: 'id' });
     console.log(`Display Name : ${user.displayName}`);
     console.log(`Email        : ${user.userPrincipalName}`);
@@ -941,19 +983,32 @@ async function cmdTeams(args) {
   }
 
   if (args.dm && args.send) {
-    const user = await graphGet(`/users/${args.dm}`, token, { $select: 'id,displayName' });
+    const user = await resolveUser(args.dm, token);
+    const me = await graphGet('/me', token, { $select: 'id' });
     const chatsData = await graphGet('/me/chats', token, { $top: 50, $select: 'id,topic,chatType' });
     const chats = chatsData.value || [];
-    const directChat = chats.find(c => c.chatType === 'oneOnOne' && c.id.includes(user.id));
+    let directChat = chats.find(c => c.chatType === 'oneOnOne' && c.id.includes(user.id));
     if (!directChat) {
-      console.error(`No existing direct chat found with ${user.displayName} (${args.dm}).`);
-      console.error(`They may need to message you first, or check --chats list manually.`);
-      process.exit(1);
+      directChat = await graphPost('/chats', token, {
+        chatType: 'oneOnOne',
+        members: [
+          {
+            '@odata.type': '#microsoft.graph.aadUserConversationMember',
+            roles: ['owner'],
+            'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${me.id}')`,
+          },
+          {
+            '@odata.type': '#microsoft.graph.aadUserConversationMember',
+            roles: ['owner'],
+            'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${user.id}')`,
+          },
+        ],
+      });
     }
     const res = await graphPost(`/me/chats/${directChat.id}/messages`, token, {
-      body: { content: args.send },
+      body: { contentType: 'html', content: args.send },
     });
-    console.log(`DM sent to ${user.displayName}. Message ID: ${res.id}`);
+    console.log(`DM sent to ${user.displayName}. Chat ID: ${directChat.id}, Message ID: ${res.id}`);
     return;
   }
 
@@ -1700,6 +1755,17 @@ async function cmdPlanner(args) {
     return;
   }
 
+  // Create a bucket in a plan.
+  if (args.planId && typeof args.createBucket === 'string') {
+    const bucket = await graphPost('/planner/buckets', token, {
+      name: args.createBucket,
+      planId: args.planId,
+      orderHint: ' !',
+    });
+    console.log(`Bucket created: ${bucket.name || args.createBucket} (ID: ${bucket.id})`);
+    return;
+  }
+
   // Create a task in a plan.
   if (args.planId && typeof args.create === 'string') {
     const payload = { planId: args.planId, title: args.create };
@@ -1741,6 +1807,27 @@ async function cmdPlanner(args) {
     return;
   }
 
+  // Update task progress (--progress TASK_ID --percent 0|50|100).
+  if (typeof args.progress === 'string') {
+    const task = await graphGet(`/planner/tasks/${args.progress}`, token);
+    const etag = task['@odata.etag'];
+    if (!etag) { console.error('Could not read the task etag; cannot update.'); process.exit(1); }
+    const pct = Math.max(0, Math.min(100, parseInt(args.percent ?? '50', 10) || 0));
+    await graphPatch(`/planner/tasks/${args.progress}`, token, { percentComplete: pct }, { 'If-Match': etag });
+    console.log(`Task progress updated to ${pct}%: ${task.title || args.progress}`);
+    return;
+  }
+
+  // Delete a Planner task.
+  if (typeof args.delete === 'string') {
+    const task = await graphGet(`/planner/tasks/${args.delete}`, token);
+    const etag = task['@odata.etag'];
+    if (!etag) { console.error('Could not read the task etag; cannot delete.'); process.exit(1); }
+    await graphDelete(`/planner/tasks/${args.delete}`, token, { 'If-Match': etag });
+    console.log(`Planner task deleted: ${task.title || args.delete}`);
+    return;
+  }
+
   // Single task detail (+ description/checklist from /details).
   if (args.taskId) {
     const task    = await graphGet(`/planner/tasks/${args.taskId}`, token);
@@ -1766,6 +1853,12 @@ async function cmdTodo(args) {
   const token = await getValidToken();
   const limit = parseInt(args.limit) || 20;
 
+  if (typeof args.createList === 'string') {
+    const list = await graphPost('/me/todo/lists', token, { displayName: args.createList });
+    console.log(`To Do list created: ${list.displayName || args.createList} (ID: ${list.id})`);
+    return;
+  }
+
   if (args.lists) {
     const data  = await graphGet('/me/todo/lists', token, { $top: limit });
     const lists = data.value || [];
@@ -1779,10 +1872,10 @@ async function cmdTodo(args) {
   }
 
   if (!args.listId) {
-    console.log('To Do: --lists');
+    console.log('To Do: --lists | --create-list "NAME"');
     console.log('       --list-id ID --tasks');
     console.log('       --list-id ID --create "TITLE" [--body TEXT] [--due YYYY-MM-DD]');
-    console.log('       --list-id ID --complete TASK_ID');
+    console.log('       --list-id ID --complete TASK_ID | --reopen TASK_ID | --delete TASK_ID');
     return;
   }
 
@@ -1801,6 +1894,20 @@ async function cmdTodo(args) {
   if (typeof args.complete === 'string') {
     await graphPatch(`/me/todo/lists/${args.listId}/tasks/${args.complete}`, token, { status: 'completed' });
     console.log(`Task marked complete: ${args.complete}`);
+    return;
+  }
+
+  // Reopen a completed task.
+  if (typeof args.reopen === 'string') {
+    await graphPatch(`/me/todo/lists/${args.listId}/tasks/${args.reopen}`, token, { status: 'notStarted' });
+    console.log(`Task reopened: ${args.reopen}`);
+    return;
+  }
+
+  // Delete a To Do task.
+  if (typeof args.delete === 'string') {
+    await graphDelete(`/me/todo/lists/${args.listId}/tasks/${args.delete}`, token);
+    console.log(`Task deleted: ${args.delete}`);
     return;
   }
 

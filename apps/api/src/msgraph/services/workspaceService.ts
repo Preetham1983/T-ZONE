@@ -1,4 +1,4 @@
-import { graphGet, graphGetAll, graphGetText, graphPatch, graphPost, stripHtml } from '../graphClient.js';
+import { graphDelete, graphGet, graphGetAll, graphGetText, graphPatch, graphPost, graphPut, stripHtml } from '../graphClient.js';
 import { runMsGraphSkill } from '../skillRunner.js';
 
 export async function getMeProfile() {
@@ -96,6 +96,15 @@ export async function sendEmail(args: { to: string[]; subject: string; body: str
       toRecipients: args.to.map((address) => ({ emailAddress: { address } })),
     },
   });
+}
+
+export async function replyToEmail(messageId: string, comment: string) {
+  await graphPost(`/me/messages/${encodeURIComponent(messageId)}/reply`, { comment });
+  return { ok: true, messageId };
+}
+
+export async function markEmailRead(messageId: string, isRead: boolean) {
+  return graphPatch(`/me/messages/${encodeURIComponent(messageId)}`, { isRead });
 }
 
 export async function listCalendarEvents(options: {
@@ -224,9 +233,47 @@ export async function completePlannerTask(taskId: string) {
   return { ok: true, id: taskId, title: task.title };
 }
 
+export async function createPlannerBucket(planId: string, name: string) {
+  return graphPost('/planner/buckets', {
+    name,
+    planId,
+    orderHint: ' !',
+  });
+}
+
+export async function updatePlannerTask(
+  taskId: string,
+  updates: { title?: string; percentComplete?: number; bucketId?: string; dueDate?: string }
+) {
+  const task = await graphGet<Record<string, unknown>>(`/planner/tasks/${encodeURIComponent(taskId)}`);
+  const etag = task['@odata.etag'] as string | undefined;
+  if (!etag) throw new Error('Missing @odata.etag on Planner task');
+  const body: Record<string, unknown> = {};
+  if (updates.title !== undefined) body.title = updates.title;
+  if (updates.percentComplete !== undefined) body.percentComplete = updates.percentComplete;
+  if (updates.bucketId !== undefined) body.bucketId = updates.bucketId;
+  if (updates.dueDate !== undefined) {
+    body.dueDateTime = updates.dueDate ? `${updates.dueDate}T00:00:00Z` : null;
+  }
+  await graphPatch(`/planner/tasks/${encodeURIComponent(taskId)}`, body, { 'If-Match': etag });
+  return { ok: true, id: taskId };
+}
+
+export async function deletePlannerTask(taskId: string) {
+  const task = await graphGet<Record<string, unknown>>(`/planner/tasks/${encodeURIComponent(taskId)}`);
+  const etag = task['@odata.etag'] as string | undefined;
+  if (!etag) throw new Error('Missing @odata.etag on Planner task');
+  await graphDelete(`/planner/tasks/${encodeURIComponent(taskId)}`, { 'If-Match': etag });
+  return { ok: true, id: taskId };
+}
+
 export async function listTodoLists() {
   const data = await graphGet<{ value?: Array<{ id: string; displayName: string }> }>('/me/todo/lists', { $top: 50 });
   return data.value || [];
+}
+
+export async function createTodoList(displayName: string) {
+  return graphPost<{ id: string; displayName: string }>('/me/todo/lists', { displayName });
 }
 
 export async function listTodoTasks(listId: string) {
@@ -237,11 +284,45 @@ export async function listTodoTasks(listId: string) {
   return data.value || [];
 }
 
-export async function createTodoTask(args: { listId: string; title: string; body?: string; dueDate?: string }) {
+export async function createTodoTask(args: {
+  listId: string;
+  title: string;
+  body?: string;
+  dueDate?: string;
+  importance?: 'low' | 'normal' | 'high';
+}) {
   const payload: Record<string, unknown> = { title: args.title };
   if (args.body) payload.body = { content: args.body, contentType: 'text' };
   if (args.dueDate) payload.dueDateTime = { dateTime: `${args.dueDate}T00:00:00.000000`, timeZone: 'UTC' };
+  if (args.importance) payload.importance = args.importance;
   return graphPost(`/me/todo/lists/${encodeURIComponent(args.listId)}/tasks`, payload);
+}
+
+export async function updateTodoTask(
+  listId: string,
+  taskId: string,
+  updates: {
+    title?: string;
+    body?: string;
+    dueDate?: string | null;
+    status?: 'notStarted' | 'inProgress' | 'completed';
+    importance?: 'low' | 'normal' | 'high';
+  }
+) {
+  const payload: Record<string, unknown> = {};
+  if (updates.title !== undefined) payload.title = updates.title;
+  if (updates.body !== undefined) payload.body = { content: updates.body, contentType: 'text' };
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.importance !== undefined) payload.importance = updates.importance;
+  if (updates.dueDate !== undefined) {
+    payload.dueDateTime = updates.dueDate
+      ? { dateTime: `${updates.dueDate}T00:00:00.000000`, timeZone: 'UTC' }
+      : null;
+  }
+  return graphPatch(
+    `/me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`,
+    payload
+  );
 }
 
 export async function completeTodoTask(listId: string, taskId: string) {
@@ -249,6 +330,23 @@ export async function completeTodoTask(listId: string, taskId: string) {
     status: 'completed',
   });
   return { ok: true, taskId };
+}
+
+export async function deleteTodoTask(listId: string, taskId: string) {
+  await graphDelete(`/me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`);
+  return { ok: true, taskId };
+}
+
+export async function cancelCalendarEvent(eventId: string, comment?: string) {
+  await graphPost(`/me/events/${encodeURIComponent(eventId)}/cancel`, {
+    comment: comment || 'Cancelled via T-ZONE',
+  });
+  return { ok: true, eventId };
+}
+
+export async function uploadOneDriveFile(remotePath: string, content: string, contentType = 'text/plain; charset=utf-8') {
+  const cleanPath = remotePath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return graphPut(`/me/drive/root:/${cleanPath}:/content`, content, contentType);
 }
 
 export async function listSharepointSites(limit = 25) {

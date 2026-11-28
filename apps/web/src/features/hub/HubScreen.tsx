@@ -41,7 +41,15 @@ export function HubScreen() {
 
   // Tasks state
   const [todoTitle, setTodoTitle] = useState('');
+  const [todoDueDate, setTodoDueDate] = useState('');
+  const [newListName, setNewListName] = useState('');
+  const [showNewList, setShowNewList] = useState(false);
   const [selectedListId, setSelectedListId] = useState<string>('');
+  const [selectedPlanId, setSelectedPlanId] = useState<string>('');
+  const [plannerTitle, setPlannerTitle] = useState('');
+  const [plannerBucketId, setPlannerBucketId] = useState('');
+  const [plannerDueDate, setPlannerDueDate] = useState('');
+  const [taskFeedback, setTaskFeedback] = useState<string | null>(null);
 
   // Files state
   const [selectedSite, setSelectedSite] = useState<{ id: string; displayName: string } | null>(null);
@@ -100,10 +108,55 @@ export function HubScreen() {
     enabled: tab === 'tasks',
   });
 
-  const completePlanner = useMutation({
+  const activePlanId = selectedPlanId || planner?.plans?.[0]?.id || '';
+  const { data: planDetail } = useQuery({
+    queryKey: ['m365-planner-plan', activePlanId],
+    queryFn: () => apiFetch<{ buckets: any[]; tasks: any[] }>(`/api/m365/planner/${encodeURIComponent(activePlanId)}`),
+    enabled: tab === 'tasks' && Boolean(activePlanId),
+  });
+
+  const createPlannerTaskMut = useMutation({
+    mutationFn: () =>
+      apiFetch('/api/m365/planner/tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          planId: activePlanId,
+          title: plannerTitle.trim(),
+          bucketId: plannerBucketId || undefined,
+          dueDate: plannerDueDate || undefined,
+        }),
+      }),
+    onSuccess: () => {
+      setPlannerTitle('');
+      setPlannerDueDate('');
+      setTaskFeedback('Planner task created.');
+      qc.invalidateQueries({ queryKey: ['m365-planner'] });
+      qc.invalidateQueries({ queryKey: ['m365-planner-plan', activePlanId] });
+    },
+    onError: (e) => setTaskFeedback((e as Error).message),
+  });
+
+  const updatePlannerTaskMut = useMutation({
+    mutationFn: ({ taskId, percentComplete }: { taskId: string; percentComplete: number }) =>
+      apiFetch(`/api/m365/planner/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ percentComplete }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['m365-planner'] });
+      qc.invalidateQueries({ queryKey: ['m365-planner-plan', activePlanId] });
+    },
+    onError: (e) => setTaskFeedback((e as Error).message),
+  });
+
+  const deletePlannerTaskMut = useMutation({
     mutationFn: (taskId: string) =>
-      apiFetch(`/api/m365/planner/tasks/${encodeURIComponent(taskId)}/complete`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['m365-planner'] }),
+      apiFetch(`/api/m365/planner/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['m365-planner'] });
+      qc.invalidateQueries({ queryKey: ['m365-planner-plan', activePlanId] });
+    },
+    onError: (e) => setTaskFeedback((e as Error).message),
   });
 
   const { data: todoLists = [] } = useQuery({
@@ -119,24 +172,56 @@ export function HubScreen() {
     enabled: tab === 'tasks' && Boolean(activeListId),
   });
 
+  const createTodoListMut = useMutation({
+    mutationFn: () =>
+      apiFetch<{ id: string; displayName: string }>('/api/m365/todo/lists', {
+        method: 'POST',
+        body: JSON.stringify({ displayName: newListName.trim() }),
+      }),
+    onSuccess: (created) => {
+      setNewListName('');
+      setShowNewList(false);
+      setSelectedListId(created.id);
+      qc.invalidateQueries({ queryKey: ['m365-todo-lists'] });
+    },
+    onError: (e) => setTaskFeedback((e as Error).message),
+  });
+
   const createTodo = useMutation({
     mutationFn: () =>
       apiFetch('/api/m365/todo/tasks', {
         method: 'POST',
-        body: JSON.stringify({ listId: activeListId, title: todoTitle }),
+        body: JSON.stringify({
+          listId: activeListId,
+          title: todoTitle.trim(),
+          dueDate: todoDueDate || undefined,
+        }),
       }),
     onSuccess: () => {
       setTodoTitle('');
+      setTodoDueDate('');
       qc.invalidateQueries({ queryKey: ['m365-todo-tasks', activeListId] });
     },
+    onError: (e) => setTaskFeedback((e as Error).message),
   });
 
-  const completeTodo = useMutation({
-    mutationFn: (taskId: string) =>
-      apiFetch(`/api/m365/todo/${encodeURIComponent(activeListId)}/tasks/${encodeURIComponent(taskId)}/complete`, {
-        method: 'POST',
+  const toggleTodoStatus = useMutation({
+    mutationFn: ({ taskId, completed }: { taskId: string; completed: boolean }) =>
+      apiFetch(`/api/m365/todo/${encodeURIComponent(activeListId)}/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: completed ? 'completed' : 'notStarted' }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['m365-todo-tasks', activeListId] }),
+    onError: (e) => setTaskFeedback((e as Error).message),
+  });
+
+  const deleteTodoMut = useMutation({
+    mutationFn: (taskId: string) =>
+      apiFetch(`/api/m365/todo/${encodeURIComponent(activeListId)}/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['m365-todo-tasks', activeListId] }),
+    onError: (e) => setTaskFeedback((e as Error).message),
   });
 
   const { data: sites = [] } = useQuery({
@@ -452,67 +537,220 @@ export function HubScreen() {
             {tab === 'calendar' && <CalendarView />}
 
             {tab === 'tasks' && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <h3 className="font-bold text-slate-900">My Planner Tasks ({planner?.myTasks.length || 0})</h3>
-                  {(planner?.myTasks || []).map((t) => (
-                    <div key={t.id} className="rounded-lg border border-slate-200 p-2.5 flex items-center justify-between gap-2">
-                      <span className={t.percentComplete === 100 ? 'line-through text-slate-400' : ''}>{t.title}</span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-mono text-slate-500">{t.percentComplete ?? 0}%</span>
-                        {t.percentComplete !== 100 && (
-                          <button
-                            onClick={() => completePlanner.mutate(t.id)}
-                            className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700"
-                          >
-                            Done
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-slate-900">Microsoft To Do</h3>
-                    <select
-                      value={activeListId}
-                      onChange={(e) => setSelectedListId(e.target.value)}
-                      className="rounded border border-slate-300 px-2 py-1 text-xs"
-                    >
-                      {todoLists.map((l) => (
-                        <option key={l.id} value={l.id}>{l.displayName}</option>
-                      ))}
-                    </select>
+              <div className="space-y-3">
+                {taskFeedback && (
+                  <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                    <span>{taskFeedback}</span>
+                    <button onClick={() => setTaskFeedback(null)} className="underline ml-2">Dismiss</button>
                   </div>
-                  <div className="flex gap-2">
-                    <input
-                      value={todoTitle}
-                      onChange={(e) => setTodoTitle(e.target.value)}
-                      placeholder="Add a To Do task..."
-                      className="flex-1 rounded border border-slate-300 px-2.5 py-1.5"
-                    />
-                    <button
-                      onClick={() => createTodo.mutate()}
-                      disabled={!todoTitle.trim() || !activeListId}
-                      className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white disabled:opacity-50"
-                    >
-                      Add
-                    </button>
-                  </div>
-                  {todoTasks.map((t) => (
-                    <div key={t.id} className="rounded-lg border border-slate-200 p-2.5 flex items-center justify-between">
-                      <span className={t.status === 'completed' ? 'line-through text-slate-400' : ''}>{t.title}</span>
-                      {t.status !== 'completed' && (
-                        <button
-                          onClick={() => completeTodo.mutate(t.id)}
-                          className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700"
+                )}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Microsoft Planner */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="font-bold text-slate-900">
+                        Microsoft Planner ({(activePlanId ? planDetail?.tasks : planner?.myTasks)?.length || 0})
+                      </h3>
+                      {(planner?.plans || []).length > 0 && (
+                        <select
+                          value={activePlanId}
+                          onChange={(e) => {
+                            setSelectedPlanId(e.target.value);
+                            setPlannerBucketId('');
+                          }}
+                          className="rounded border border-slate-300 px-2 py-1 text-xs max-w-[200px]"
                         >
-                          Done
-                        </button>
+                          {(planner?.plans || []).map((p: any) => (
+                            <option key={p.id} value={p.id}>{p.title || p.id}</option>
+                          ))}
+                        </select>
                       )}
                     </div>
-                  ))}
+
+                    {activePlanId ? (
+                      <div className="flex flex-wrap gap-2">
+                        <input
+                          value={plannerTitle}
+                          onChange={(e) => setPlannerTitle(e.target.value)}
+                          placeholder="Add Planner task..."
+                          className="flex-1 min-w-[140px] rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                        />
+                        {(planDetail?.buckets || []).length > 0 && (
+                          <select
+                            value={plannerBucketId}
+                            onChange={(e) => setPlannerBucketId(e.target.value)}
+                            className="rounded border border-slate-300 px-2 py-1.5 text-xs"
+                          >
+                            <option value="">Default bucket</option>
+                            {(planDetail?.buckets || []).map((b: any) => (
+                              <option key={b.id} value={b.id}>{b.name}</option>
+                            ))}
+                          </select>
+                        )}
+                        <input
+                          type="date"
+                          value={plannerDueDate}
+                          onChange={(e) => setPlannerDueDate(e.target.value)}
+                          className="rounded border border-slate-300 px-2 py-1.5 text-xs"
+                        />
+                        <button
+                          onClick={() => createPlannerTaskMut.mutate()}
+                          disabled={!plannerTitle.trim() || createPlannerTaskMut.isPending}
+                          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                        >
+                          {createPlannerTaskMut.isPending ? 'Adding...' : 'Add'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+                        No Planner plans found in your M365 groups yet. Assigned Planner tasks appear below, or use Microsoft To Do on the right.
+                      </div>
+                    )}
+
+                    {(activePlanId ? planDetail?.tasks || [] : planner?.myTasks || []).map((t: any) => (
+                      <div key={t.id} className="rounded-lg border border-slate-200 p-2.5 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className={t.percentComplete === 100 ? 'line-through text-slate-400 truncate' : 'truncate font-medium text-slate-800'}>
+                            {t.title}
+                          </div>
+                          {t.dueDateTime && (
+                            <div className="text-[10px] text-slate-400">Due {String(t.dueDateTime).slice(0, 10)}</div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="font-mono text-[11px] text-slate-500">{t.percentComplete ?? 0}%</span>
+                          {t.percentComplete !== 100 ? (
+                            <button
+                              onClick={() => updatePlannerTaskMut.mutate({ taskId: t.id, percentComplete: 100 })}
+                              className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700"
+                            >
+                              Done
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => updatePlannerTaskMut.mutate({ taskId: t.id, percentComplete: 0 })}
+                              className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600"
+                            >
+                              Reopen
+                            </button>
+                          )}
+                          <button
+                            onClick={() => deletePlannerTaskMut.mutate(t.id)}
+                            className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] text-red-600"
+                            title="Delete task"
+                          >
+                            Del
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Microsoft To Do */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="font-bold text-slate-900">Microsoft To Do ({todoTasks.length})</h3>
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={activeListId}
+                          onChange={(e) => setSelectedListId(e.target.value)}
+                          className="rounded border border-slate-300 px-2 py-1 text-xs"
+                        >
+                          {todoLists.map((l) => (
+                            <option key={l.id} value={l.id}>{l.displayName}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => setShowNewList((v) => !v)}
+                          className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                        >
+                          + List
+                        </button>
+                      </div>
+                    </div>
+
+                    {showNewList && (
+                      <div className="flex gap-2">
+                        <input
+                          value={newListName}
+                          onChange={(e) => setNewListName(e.target.value)}
+                          placeholder="New To Do list name..."
+                          className="flex-1 rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                        />
+                        <button
+                          onClick={() => createTodoListMut.mutate()}
+                          disabled={!newListName.trim() || createTodoListMut.isPending}
+                          className="rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                        >
+                          Create List
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        value={todoTitle}
+                        onChange={(e) => setTodoTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && todoTitle.trim() && activeListId) {
+                            createTodo.mutate();
+                          }
+                        }}
+                        placeholder="Add a To Do task..."
+                        className="flex-1 min-w-[140px] rounded border border-slate-300 px-2.5 py-1.5 text-xs"
+                      />
+                      <input
+                        type="date"
+                        value={todoDueDate}
+                        onChange={(e) => setTodoDueDate(e.target.value)}
+                        className="rounded border border-slate-300 px-2 py-1.5 text-xs"
+                      />
+                      <button
+                        onClick={() => createTodo.mutate()}
+                        disabled={!todoTitle.trim() || !activeListId || createTodo.isPending}
+                        className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                      >
+                        {createTodo.isPending ? 'Adding...' : 'Add'}
+                      </button>
+                    </div>
+
+                    {todoTasks.map((t) => (
+                      <div key={t.id} className="rounded-lg border border-slate-200 p-2.5 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className={t.status === 'completed' ? 'line-through text-slate-400 truncate' : 'truncate font-medium text-slate-800'}>
+                            {t.title}
+                          </div>
+                          {t.dueDateTime?.dateTime && (
+                            <div className="text-[10px] text-slate-400">Due {String(t.dueDateTime.dateTime).slice(0, 10)}</div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {t.status !== 'completed' ? (
+                            <button
+                              onClick={() => toggleTodoStatus.mutate({ taskId: t.id, completed: true })}
+                              className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700"
+                            >
+                              Done
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => toggleTodoStatus.mutate({ taskId: t.id, completed: false })}
+                              className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600"
+                            >
+                              Reopen
+                            </button>
+                          )}
+                          <button
+                            onClick={() => deleteTodoMut.mutate(t.id)}
+                            className="rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] text-red-600"
+                            title="Delete task"
+                          >
+                            Del
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}

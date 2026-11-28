@@ -4,6 +4,7 @@ export type AppScreen =
   | 'dashboard'
   | 'auth'
   | 'chat'
+  | 'planner'
   | 'meetings'
   | 'transcripts'
   | 'teams'

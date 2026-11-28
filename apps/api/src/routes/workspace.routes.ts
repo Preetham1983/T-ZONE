@@ -5,13 +5,18 @@ import { getAuthStatus } from '../msgraph/authManager.js';
 import { listTeamsChats } from '../msgraph/services/teamsService.js';
 import { getSyncStatus } from '../sync/indexer.js';
 import {
+  cancelCalendarEvent,
   completePlannerTask,
   completeTodoTask,
   createCalendarEvent,
   createEmailDraft,
   createOnenotePage,
+  createPlannerBucket,
   createPlannerTask,
+  createTodoList,
   createTodoTask,
+  deletePlannerTask,
+  deleteTodoTask,
   getMeProfile,
   getOrgOverview,
   listCalendarEvents,
@@ -29,10 +34,15 @@ import {
   listSiteDrives,
   listTodoLists,
   listTodoTasks,
+  markEmailRead,
   readEmail,
   readOnenotePage,
+  replyToEmail,
   searchPeople,
   sendEmail,
+  updatePlannerTask,
+  updateTodoTask,
+  uploadOneDriveFile,
 } from '../msgraph/services/workspaceService.js';
 
 export async function registerWorkspaceRoutes(app: FastifyInstance): Promise<void> {
@@ -123,6 +133,16 @@ export async function registerWorkspaceRoutes(app: FastifyInstance): Promise<voi
     async (req) => sendEmail(req.body)
   );
 
+  app.post<{ Params: { id: string }; Body: { comment: string } }>(
+    '/api/m365/emails/:id/reply',
+    async (req) => replyToEmail(req.params.id, req.body.comment)
+  );
+
+  app.patch<{ Params: { id: string }; Body: { isRead: boolean } }>(
+    '/api/m365/emails/:id',
+    async (req) => markEmailRead(req.params.id, Boolean(req.body.isRead))
+  );
+
   app.get<{ Querystring: { limit?: string; days?: string; pastDays?: string; tz?: string } }>(
     '/api/m365/calendar',
     async (req) =>
@@ -160,24 +180,68 @@ export async function registerWorkspaceRoutes(app: FastifyInstance): Promise<voi
     Body: { planId: string; title: string; bucketId?: string; dueDate?: string; assignUserId?: string };
   }>('/api/m365/planner/tasks', async (req) => createPlannerTask(req.body));
 
+  app.post<{ Body: { planId: string; name: string } }>('/api/m365/planner/buckets', async (req) =>
+    createPlannerBucket(req.body.planId, req.body.name)
+  );
+
+  app.patch<{
+    Params: { taskId: string };
+    Body: { title?: string; percentComplete?: number; bucketId?: string; dueDate?: string };
+  }>('/api/m365/planner/tasks/:taskId', async (req) => updatePlannerTask(req.params.taskId, req.body));
+
+  app.delete<{ Params: { taskId: string } }>('/api/m365/planner/tasks/:taskId', async (req) =>
+    deletePlannerTask(req.params.taskId)
+  );
+
   app.post<{ Params: { taskId: string } }>('/api/m365/planner/tasks/:taskId/complete', async (req) =>
     completePlannerTask(req.params.taskId)
   );
 
   app.get('/api/m365/todo', async () => listTodoLists());
 
+  app.post<{ Body: { displayName: string } }>('/api/m365/todo/lists', async (req) =>
+    createTodoList(req.body.displayName)
+  );
+
   app.get<{ Params: { listId: string } }>('/api/m365/todo/:listId/tasks', async (req) =>
     listTodoTasks(req.params.listId)
   );
 
-  app.post<{ Body: { listId: string; title: string; body?: string; dueDate?: string } }>(
-    '/api/m365/todo/tasks',
-    async (req) => createTodoTask(req.body)
+  app.post<{
+    Body: { listId: string; title: string; body?: string; dueDate?: string; importance?: 'low' | 'normal' | 'high' };
+  }>('/api/m365/todo/tasks', async (req) => createTodoTask(req.body));
+
+  app.patch<{
+    Params: { listId: string; taskId: string };
+    Body: {
+      title?: string;
+      body?: string;
+      dueDate?: string | null;
+      status?: 'notStarted' | 'inProgress' | 'completed';
+      importance?: 'low' | 'normal' | 'high';
+    };
+  }>('/api/m365/todo/:listId/tasks/:taskId', async (req) =>
+    updateTodoTask(req.params.listId, req.params.taskId, req.body)
   );
 
   app.post<{ Params: { listId: string; taskId: string } }>(
     '/api/m365/todo/:listId/tasks/:taskId/complete',
     async (req) => completeTodoTask(req.params.listId, req.params.taskId)
+  );
+
+  app.delete<{ Params: { listId: string; taskId: string } }>(
+    '/api/m365/todo/:listId/tasks/:taskId',
+    async (req) => deleteTodoTask(req.params.listId, req.params.taskId)
+  );
+
+  app.post<{ Params: { id: string }; Body: { comment?: string } }>(
+    '/api/m365/calendar/events/:id/cancel',
+    async (req) => cancelCalendarEvent(req.params.id, req.body?.comment)
+  );
+
+  app.put<{ Body: { path: string; content: string; contentType?: string } }>(
+    '/api/m365/onedrive/file',
+    async (req) => uploadOneDriveFile(req.body.path, req.body.content, req.body.contentType)
   );
 
   app.get('/api/m365/sharepoint', async () => listSharepointSites());

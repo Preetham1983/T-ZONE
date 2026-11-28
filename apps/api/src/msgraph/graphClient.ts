@@ -163,3 +163,27 @@ export async function graphPatch<T = Record<string, unknown>>(
   const text = await res.text();
   return (text ? JSON.parse(text) : {}) as T;
 }
+
+export async function graphPut<T = Record<string, unknown>>(
+  endpoint: string,
+  rawBody: string | Uint8Array,
+  contentType = 'application/octet-stream',
+  headers?: Record<string, string>
+): Promise<T> {
+  const url = buildGraphUrl(endpoint);
+  const res = await rawGraphRequest(url, {
+    method: 'PUT',
+    rawBody,
+    headers: { 'Content-Type': contentType, ...headers },
+  });
+  const text = await res.text();
+  return (text ? JSON.parse(text) : {}) as T;
+}
+
+export async function graphDelete(
+  endpoint: string,
+  headers?: Record<string, string>
+): Promise<void> {
+  const url = buildGraphUrl(endpoint);
+  await rawGraphRequest(url, { method: 'DELETE', headers });
+}

@@ -6,6 +6,7 @@ import { ChatScreen } from './features/chat/ChatScreen.js';
 import { DashboardScreen } from './features/dashboard/DashboardScreen.js';
 import { HubScreen } from './features/hub/HubScreen.js';
 import { MeetingAgentScreen } from './features/meetings/MeetingAgentScreen.js';
+import { PlannerScreen } from './features/planner/PlannerScreen.js';
 import { SettingsScreen } from './features/settings/SettingsScreen.js';
 import { TeamsScreen } from './features/teams/TeamsScreen.js';
 import { TranscriptsScreen } from './features/transcripts/TranscriptsScreen.js';
@@ -29,6 +30,8 @@ function ScreenRouter() {
       return <AuthScreen />;
     case 'meetings':
       return <MeetingAgentScreen />;
+    case 'planner':
+      return <PlannerScreen />;
     case 'transcripts':
       return <TranscriptsScreen />;
     case 'teams':

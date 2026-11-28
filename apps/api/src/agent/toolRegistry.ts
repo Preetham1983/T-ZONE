@@ -1,5 +1,20 @@
 import crypto from 'node:crypto';
-import type { ApprovalPolicy, CitationItem, PendingAction } from '@tzone/shared';
+import type {
+  ApprovalPolicy,
+  CitationItem,
+  PendingAction,
+  PlannerTaskPriority,
+  PlannerTaskStatus,
+} from '@tzone/shared';
+import {
+  createPlannerBoard,
+  createPlannerTaskRecord,
+  deletePlannerTaskRecord,
+  getPlannerStats,
+  listPlannerBoards,
+  listPlannerTasks,
+  updatePlannerTaskRecord,
+} from '../db/plannerRepository.js';
 import {
   createPendingAction,
   getPendingAction,
@@ -24,14 +39,19 @@ import {
 } from '../msgraph/services/teamsService.js';
 import { extractAllTranscripts } from '../msgraph/services/transcriptsService.js';
 import {
+  cancelCalendarEvent,
   checkAvailability,
   completePlannerTask,
   completeTodoTask,
   createCalendarEvent,
   createEmailDraft,
   createOnenotePage,
+  createPlannerBucket,
   createPlannerTask,
+  createTodoList,
   createTodoTask,
+  deletePlannerTask,
+  deleteTodoTask,
   getOrgOverview,
   listCalendarEvents,
   listDriveItems,
@@ -50,8 +70,12 @@ import {
   listTodoTasks,
   readEmail,
   readOnenotePage,
+  replyToEmail,
   searchPeople,
   sendEmail,
+  updatePlannerTask,
+  updateTodoTask,
+  uploadOneDriveFile,
 } from '../msgraph/services/workspaceService.js';
 
 export interface ToolExecutionContext {
@@ -748,15 +772,16 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
   {
     definition: def(
       'create_planner_task',
-      'Create a task on a Planner board or mark a Planner task complete.',
+      'Create a Planner task or bucket, update progress, mark complete, or delete a Planner task.',
       {
-        action: { type: 'string', enum: ['create', 'complete'] },
+        action: { type: 'string', enum: ['create', 'complete', 'update', 'delete', 'create_bucket'] },
         planId: { type: 'string' },
         title: { type: 'string' },
         bucketId: { type: 'string' },
         dueDate: { type: 'string', description: 'YYYY-MM-DD' },
         assignUserId: { type: 'string' },
-        taskId: { type: 'string', description: 'Required when action=complete' },
+        percentComplete: { type: 'number', description: '0, 50, or 100 for action=update' },
+        taskId: { type: 'string', description: 'Required for complete, update, delete' },
       },
       ['action']
     ),
@@ -766,6 +791,20 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
     execute: async (args) => {
       if (args.action === 'complete') {
         return completePlannerTask(String(args.taskId));
+      }
+      if (args.action === 'update') {
+        return updatePlannerTask(String(args.taskId), {
+          title: args.title ? String(args.title) : undefined,
+          percentComplete: args.percentComplete !== undefined ? Number(args.percentComplete) : undefined,
+          bucketId: args.bucketId ? String(args.bucketId) : undefined,
+          dueDate: args.dueDate ? String(args.dueDate) : undefined,
+        });
+      }
+      if (args.action === 'delete') {
+        return deletePlannerTask(String(args.taskId));
+      }
+      if (args.action === 'create_bucket') {
+        return createPlannerBucket(String(args.planId), String(args.title));
       }
       return createPlannerTask({
         planId: String(args.planId),
@@ -779,31 +818,96 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
   {
     definition: def(
       'manage_todo_task',
-      'Create or complete a personal Microsoft To Do task.',
+      'Create a To Do list or task, complete/reopen/update a task, or delete a Microsoft To Do task.',
       {
-        action: { type: 'string', enum: ['create', 'complete'] },
+        action: { type: 'string', enum: ['create', 'complete', 'reopen', 'update', 'delete', 'create_list'] },
         listId: { type: 'string' },
         title: { type: 'string' },
         body: { type: 'string' },
-        dueDate: { type: 'string' },
+        dueDate: { type: 'string', description: 'YYYY-MM-DD' },
+        importance: { type: 'string', enum: ['low', 'normal', 'high'] },
         taskId: { type: 'string' },
       },
-      ['action', 'listId']
+      ['action']
     ),
     skillCommand: 'msgraph todo --create / --complete',
     isWrite: true,
     isExternalSend: false,
     execute: async (args) => {
+      if (args.action === 'create_list') {
+        return createTodoList(String(args.title));
+      }
       if (args.action === 'complete') {
         return completeTodoTask(String(args.listId), String(args.taskId));
+      }
+      if (args.action === 'reopen') {
+        return updateTodoTask(String(args.listId), String(args.taskId), { status: 'notStarted' });
+      }
+      if (args.action === 'update') {
+        return updateTodoTask(String(args.listId), String(args.taskId), {
+          title: args.title ? String(args.title) : undefined,
+          body: args.body ? String(args.body) : undefined,
+          dueDate: args.dueDate ? String(args.dueDate) : undefined,
+          importance: args.importance as 'low' | 'normal' | 'high' | undefined,
+        });
+      }
+      if (args.action === 'delete') {
+        return deleteTodoTask(String(args.listId), String(args.taskId));
       }
       return createTodoTask({
         listId: String(args.listId),
         title: String(args.title),
         body: args.body ? String(args.body) : undefined,
         dueDate: args.dueDate ? String(args.dueDate) : undefined,
+        importance: args.importance as 'low' | 'normal' | 'high' | undefined,
       });
     },
+  },
+  {
+    definition: def(
+      'reply_to_email',
+      'Reply to an existing Outlook email thread by message ID.',
+      { messageId: { type: 'string' }, comment: { type: 'string' } },
+      ['messageId', 'comment']
+    ),
+    skillCommand: 'msgraph emails --reply',
+    isWrite: true,
+    isExternalSend: true,
+    describeAction: (a) => ({
+      title: 'Reply to Outlook Email',
+      target: `Message ID: ${String(a.messageId).slice(0, 24)}...`,
+      preview: String(a.comment || ''),
+    }),
+    execute: async (args) => replyToEmail(String(args.messageId), String(args.comment)),
+  },
+  {
+    definition: def(
+      'cancel_calendar_event',
+      'Cancel an existing calendar event by ID.',
+      { eventId: { type: 'string' }, comment: { type: 'string' } },
+      ['eventId']
+    ),
+    skillCommand: 'msgraph calendar --cancel',
+    isWrite: true,
+    isExternalSend: true,
+    describeAction: (a) => ({
+      title: 'Cancel Calendar Event',
+      target: `Event ID: ${String(a.eventId).slice(0, 24)}...`,
+      preview: String(a.comment || 'Cancelled via T-ZONE'),
+    }),
+    execute: async (args) => cancelCalendarEvent(String(args.eventId), args.comment ? String(args.comment) : undefined),
+  },
+  {
+    definition: def(
+      'upload_onedrive_file',
+      'Create or overwrite a text/markdown/JSON file in OneDrive.',
+      { path: { type: 'string', description: 'e.g. Notes/summary.md' }, content: { type: 'string' } },
+      ['path', 'content']
+    ),
+    skillCommand: 'msgraph files --upload',
+    isWrite: true,
+    isExternalSend: false,
+    execute: async (args) => uploadOneDriveFile(String(args.path), String(args.content)),
   },
   {
     definition: def(
@@ -816,6 +920,128 @@ export const TOOL_REGISTRY: RegisteredTool[] = [
     isWrite: true,
     isExternalSend: false,
     execute: async (args) => createOnenotePage(String(args.sectionId), String(args.title), String(args.body)),
+  },
+
+  // ── T-ZONE NATIVE PLANNER & TO DO TOOLS ────────────────────────────────────
+  {
+    definition: def(
+      'tzone_list_planner',
+      'List T-ZONE Planner boards, task stats, and tasks (filterable by boardId, status, priority, or search).',
+      {
+        boardId: { type: 'string' },
+        status: { type: 'string', enum: ['todo', 'in_progress', 'review', 'done'] },
+        priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+        search: { type: 'string' },
+      }
+    ),
+    skillCommand: 'tzone-planner list',
+    execute: async (args) => ({
+      boards: listPlannerBoards(),
+      stats: getPlannerStats(args.boardId ? String(args.boardId) : undefined),
+      tasks: listPlannerTasks({
+        boardId: args.boardId ? String(args.boardId) : undefined,
+        status: args.status as PlannerTaskStatus | undefined,
+        priority: args.priority as PlannerTaskPriority | undefined,
+        search: args.search ? String(args.search) : undefined,
+      }),
+    }),
+  },
+  {
+    definition: def(
+      'tzone_create_board',
+      'Create a new T-ZONE Planner board.',
+      {
+        name: { type: 'string' },
+        description: { type: 'string' },
+        color: { type: 'string', description: 'Hex color like #2563eb' },
+      },
+      ['name']
+    ),
+    skillCommand: 'tzone-planner board:create',
+    isWrite: true,
+    isExternalSend: false,
+    execute: async (args) =>
+      createPlannerBoard({
+        name: String(args.name || ''),
+        description: args.description ? String(args.description) : undefined,
+        color: args.color ? String(args.color) : undefined,
+      }),
+  },
+  {
+    definition: def(
+      'tzone_create_task',
+      'Create a task in T-ZONE Planner & To Do.',
+      {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        boardId: { type: 'string' },
+        status: { type: 'string', enum: ['todo', 'in_progress', 'review', 'done'] },
+        priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+        dueDate: { type: 'string', description: 'YYYY-MM-DD' },
+        tags: { type: 'array', items: { type: 'string' } },
+        assignee: { type: 'string' },
+        checklist: { type: 'array', items: { type: 'string' } },
+      },
+      ['title']
+    ),
+    skillCommand: 'tzone-planner task:create',
+    isWrite: true,
+    isExternalSend: false,
+    execute: async (args) =>
+      createPlannerTaskRecord({
+        title: String(args.title || ''),
+        description: args.description ? String(args.description) : undefined,
+        boardId: args.boardId ? String(args.boardId) : undefined,
+        status: args.status as PlannerTaskStatus | undefined,
+        priority: args.priority as PlannerTaskPriority | undefined,
+        dueDate: args.dueDate ? String(args.dueDate) : undefined,
+        tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+        assignee: args.assignee ? String(args.assignee) : undefined,
+        checklist: Array.isArray(args.checklist) ? args.checklist.map(String) : undefined,
+        sourceType: 'agent',
+      }),
+  },
+  {
+    definition: def(
+      'tzone_update_task',
+      'Update a T-ZONE Planner task (move column/status, change priority, title, description, dueDate, tags, assignee).',
+      {
+        taskId: { type: 'string' },
+        title: { type: 'string' },
+        description: { type: 'string' },
+        status: { type: 'string', enum: ['todo', 'in_progress', 'review', 'done'] },
+        priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+        dueDate: { type: 'string', description: 'YYYY-MM-DD or empty to clear' },
+        tags: { type: 'array', items: { type: 'string' } },
+        assignee: { type: 'string' },
+      },
+      ['taskId']
+    ),
+    skillCommand: 'tzone-planner task:update',
+    isWrite: true,
+    isExternalSend: false,
+    execute: async (args) =>
+      updatePlannerTaskRecord(String(args.taskId), {
+        title: args.title !== undefined ? String(args.title) : undefined,
+        description: args.description !== undefined ? String(args.description) : undefined,
+        status: args.status as PlannerTaskStatus | undefined,
+        priority: args.priority as PlannerTaskPriority | undefined,
+        dueDate: args.dueDate !== undefined ? (args.dueDate ? String(args.dueDate) : null) : undefined,
+        tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+        assignee: args.assignee !== undefined ? String(args.assignee) : undefined,
+      }),
+  },
+  {
+    definition: def(
+      'tzone_delete_task',
+      'Delete a task from T-ZONE Planner by taskId.',
+      { taskId: { type: 'string' } },
+      ['taskId']
+    ),
+    skillCommand: 'tzone-planner task:delete',
+    isWrite: true,
+    isExternalSend: false,
+    execute: async (args) => deletePlannerTaskRecord(String(args.taskId)),
   },
 ];
 

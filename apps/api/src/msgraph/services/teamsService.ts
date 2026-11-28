@@ -143,14 +143,105 @@ export async function sendChatMessage(chatId: string, content: string): Promise<
   return { id: res.id || '' };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve a colleague's AAD user ID and display name by email, UPN, AAD ID, or display name.
+ * Falls back to `/me/people` and existing chat members if `/users/{id}` is denied by scope policy.
+ */
+async function resolveTeamsUser(
+  userQuery: string
+): Promise<{ id: string; displayName: string; email?: string }> {
+  const q = userQuery.trim();
+  if (!q) throw new Error('Recipient email, name, or user ID is required.');
+
+  // 1. Direct Graph /users/{idOrUpn} lookup (works when User.ReadBasic.All is granted)
+  if (q.includes('@') || UUID_RE.test(q)) {
+    try {
+      const user = await graphGet<{ id: string; displayName?: string; userPrincipalName?: string; mail?: string }>(
+        `/users/${encodeURIComponent(q)}`,
+        { $select: 'id,displayName,userPrincipalName,mail' }
+      );
+      if (user?.id) {
+        return {
+          id: user.id,
+          displayName: user.displayName || user.userPrincipalName || q,
+          email: user.mail || user.userPrincipalName,
+        };
+      }
+    } catch {
+      // Fall back to /me/people and /me/chats below
+    }
+  }
+
+  const qLower = q.toLowerCase();
+
+  // 2. Search /me/people (uses People.Read, returns AAD object IDs for org users)
+  try {
+    const peopleRes = await graphGet<{
+      value?: Array<{
+        id?: string;
+        displayName?: string;
+        userPrincipalName?: string;
+        scoredEmailAddresses?: Array<{ address?: string }>;
+      }>;
+    }>('/me/people', { $search: `"${q.replace(/"/g, '')}"`, $top: 15 });
+
+    for (const p of peopleRes.value || []) {
+      const candidateEmails = [
+        p.userPrincipalName,
+        ...(p.scoredEmailAddresses || []).map((e) => e.address),
+      ]
+        .filter(Boolean)
+        .map((e) => String(e).toLowerCase());
+      const matchesEmail = candidateEmails.some((e) => e === qLower || e.includes(qLower));
+      const matchesName = (p.displayName || '').toLowerCase().includes(qLower);
+      if (p.id && UUID_RE.test(p.id) && (matchesEmail || matchesName)) {
+        return {
+          id: p.id,
+          displayName: p.displayName || candidateEmails[0] || q,
+          email: candidateEmails[0],
+        };
+      }
+    }
+  } catch {
+    // Ignore and check existing chats
+  }
+
+  // 3. Scan existing Teams chats with expanded members
+  try {
+    const chats = await graphGetAll<RawGraphChat>(
+      '/me/chats',
+      { $top: 50, $expand: 'members' },
+      100
+    );
+    for (const c of chats) {
+      for (const m of c.members || []) {
+        const mEmail = (m.email || '').toLowerCase();
+        const mName = (m.displayName || '').toLowerCase();
+        if (m.userId && (mEmail === qLower || m.userId.toLowerCase() === qLower || mName.includes(qLower))) {
+          return {
+            id: m.userId,
+            displayName: m.displayName || m.email || q,
+            email: m.email,
+          };
+        }
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  throw new Error(
+    `Could not resolve Teams user "${userQuery}". Ensure they are in your organization, or sign in again to grant User.ReadBasic.All.`
+  );
+}
+
 export async function sendDirectMessageToUser(
   userEmailOrId: string,
   content: string
 ): Promise<{ chatId: string; messageId: string; recipientName: string }> {
-  const user = await graphGet<{ id: string; displayName?: string; userPrincipalName?: string }>(
-    `/users/${encodeURIComponent(userEmailOrId)}`,
-    { $select: 'id,displayName,userPrincipalName' }
-  );
+  const user = await resolveTeamsUser(userEmailOrId);
   const me = await graphGet<{ id: string }>('/me', { $select: 'id' });
 
   const chats = await graphGetAll<RawGraphChat>('/me/chats', { $top: 50, $select: 'id,chatType' }, 150);
@@ -179,7 +270,7 @@ export async function sendDirectMessageToUser(
   return {
     chatId: directChat.id,
     messageId: sent.id,
-    recipientName: user.displayName || user.userPrincipalName || userEmailOrId,
+    recipientName: user.displayName || user.email || userEmailOrId,
   };
 }
 

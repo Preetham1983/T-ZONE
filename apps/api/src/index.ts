@@ -6,7 +6,9 @@ import { AuthRequiredError } from './msgraph/authManager.js';
 import { GraphApiError } from './msgraph/graphClient.js';
 import { registerAuthRoutes } from './routes/auth.routes.js';
 import { registerChatRoutes } from './routes/chat.routes.js';
+import { registerMcpRoutes } from './routes/mcp.routes.js';
 import { registerMeetingAgentRoutes } from './routes/meetingAgent.routes.js';
+import { registerPlannerRoutes } from './routes/planner.routes.js';
 import { registerSettingsRoutes } from './routes/settings.routes.js';
 import { registerTeamsRoutes } from './routes/teams.routes.js';
 import { registerTranscriptsRoutes } from './routes/transcripts.routes.js';
@@ -15,7 +17,8 @@ import { registerWorkspaceRoutes } from './routes/workspace.routes.js';
 export async function buildApp() {
   getDb();
 
-  const app = Fastify({ logger: { level: 'info' } });
+  // M365 IDs (To Do list/task IDs, Outlook message IDs, Teams chat IDs) exceed Fastify's 100-char default.
+  const app = Fastify({ logger: { level: 'info' }, maxParamLength: 2048 });
   await app.register(cors, { origin: true });
 
   app.setErrorHandler((err, _req, reply) => {
@@ -36,6 +39,8 @@ export async function buildApp() {
   await registerSettingsRoutes(app);
   await registerChatRoutes(app);
   await registerMeetingAgentRoutes(app);
+  await registerPlannerRoutes(app);
+  await registerMcpRoutes(app);
   await registerTeamsRoutes(app);
   await registerTranscriptsRoutes(app);
   await registerWorkspaceRoutes(app);

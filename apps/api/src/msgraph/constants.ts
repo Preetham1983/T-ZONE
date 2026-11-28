@@ -20,6 +20,7 @@ export const MSGRAPH_SCOPES = [
   'ChannelMessage.Send',
   'OnlineMeetingTranscript.Read.All',
   'OnlineMeetings.Read',
+  'OnlineMeetings.ReadWrite',
   'People.Read',
   'Contacts.Read',
   'offline_access',

@@ -369,3 +369,49 @@ test('extractWakeQuery and toSpokenPlainText detect T-ZONE wake phrases and clea
     true
   );
 });
+
+test('T-ZONE Planner REST API and MCP endpoint support full CRUD', async () => {
+  const app = await buildApp();
+
+  const boardsRes = await app.inject({ method: 'GET', url: '/api/planner/boards' });
+  assert.equal(boardsRes.statusCode, 200);
+  const boards = boardsRes.json();
+  assert.ok(Array.isArray(boards) && boards.length >= 1);
+
+  const createRes = await app.inject({
+    method: 'POST',
+    url: '/api/planner/tasks',
+    payload: { title: 'Test Planner Task', priority: 'high', tags: ['test'] },
+  });
+  assert.equal(createRes.statusCode, 200);
+  const created = createRes.json();
+  assert.equal(created.title, 'Test Planner Task');
+  assert.equal(created.status, 'todo');
+
+  const mcpListRes = await app.inject({
+    method: 'POST',
+    url: '/api/mcp',
+    payload: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+  });
+  assert.equal(mcpListRes.statusCode, 200);
+  const mcpList = mcpListRes.json();
+  assert.ok(mcpList.result.tools.some((t) => t.name === 'tzone_planner_create_task'));
+
+  const mcpUpdateRes = await app.inject({
+    method: 'POST',
+    url: '/api/mcp',
+    payload: {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'tzone_planner_update_task', arguments: { taskId: created.id, status: 'done' } },
+    },
+  });
+  assert.equal(mcpUpdateRes.statusCode, 200);
+  const updatedPayload = JSON.parse(mcpUpdateRes.json().result.content[0].text);
+  assert.equal(updatedPayload.status, 'done');
+
+  const delRes = await app.inject({ method: 'DELETE', url: `/api/planner/tasks/${created.id}` });
+  assert.equal(delRes.statusCode, 200);
+  await app.close();
+});
